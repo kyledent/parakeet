@@ -14,6 +14,11 @@ import scipy.constants
 from math import pi, log, sqrt
 
 
+# np.trapz is deprecated in numpy 2 and slated for removal; np.trapezoid is its
+# replacement but only exists from numpy 2.0, and nothing here pins a version.
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz
+
+
 def electron_velocity(energy):
     """
     Calculate the velocity of an electron relative to the speed of light
@@ -47,7 +52,7 @@ def landau(l):
     """
     u = np.arange(1e-30, 40, 0.01)
     v = np.exp(-pi * u / 2) * np.cos(l * u + u * np.log(u))
-    psi = (1 / pi) * np.trapz(v, u)
+    psi = (1 / pi) * _trapezoid(v, u)
     if psi < 1e-5:
         psi = 0
     return psi

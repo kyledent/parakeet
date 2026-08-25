@@ -911,6 +911,17 @@ class Output(BaseModel):
         ),
     )
 
+    intensity_range: Optional[Tuple[float, float]] = Field(
+        None,
+        description=(
+            "The (min, max) intensity mapped onto the integer range when dtype "
+            "is int16/uint16. Required for multi-frame output: frames are "
+            "written one at a time, so without a fixed range each frame would "
+            "be rescaled independently and intensities could not be compared "
+            "between tilts. Ignored for float dtypes."
+        ),
+    )
+
 
 class Config(BaseModel):
     """

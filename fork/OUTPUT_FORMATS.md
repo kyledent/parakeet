@@ -32,24 +32,31 @@ parakeet simulate image -c config.yaml -o optics.h5 -i image.mrc --dtype int16
 
 It is **not** accepted by `simulate exit_wave`, which always writes complex data.
 
-## Integer output rescales, and does so per frame
+## Integer output
 
 `float16` and `float32` are written as-is. `int16` and `uint16` go through
 `IntegerRescalingProxy` (`src/parakeet/io.py`), which linearly maps the data onto the full
 integer range so relative contrast survives the conversion.
 
-> **Known limitation — integer output is not safe for a tilt series.**
-> Frames are written one at a time (`writer.data[i, :, :] = image` in
-> `simulate/simulation.py`), so the proxy computes `vmin`/`vmax` **per frame** and rescales each
-> frame independently to the full integer range. Relative intensity **between** tilts is
-> therefore destroyed, which matters most for exactly the variable-exposure case this fork
-> exists to model: tilts that differ in dose, and so in intensity, come out normalised to the
-> same range. The scale factors are not recorded in the MRC header either, so the mapping cannot
-> be inverted.
->
-> Use `float16` (the default) or `float32` for tilt series. `int16`/`uint16` are safe for a
-> single image. Fixing this needs either a two-pass write or a user-supplied intensity range —
-> not yet decided, so it is documented rather than papered over.
+Frames are written one at a time, so the mapping is **fixed for the whole file** rather than
+recomputed per frame — otherwise every tilt would be normalised independently and intensities
+could not be compared between them, which would erase exactly the difference a variable-exposure
+series is built to carry.
+
+```yaml
+output:
+  dtype: uint16
+  intensity_range: [0.0, 4.0]   # the (min, max) mapped onto the integer range
+```
+
+- **With `intensity_range`** — that range is used for every frame. Because it lives in the config
+  rather than in the data, the conversion can be inverted exactly. Values outside it clip.
+- **Single-frame output without one** — the range is taken from that frame, which is unambiguous.
+- **Multi-frame output without one** — writing **raises**. Set a range, or write `float16`
+  (the default) or `float32`.
+
+Pinned by `tests/test_output_dtype.py`, including a test that two frames of differing brightness
+remain distinguishable through a round trip.
 
 ## Size Impact
 

@@ -573,15 +573,29 @@ class MrcfileHeader(Header):
 
 class IntegerRescalingProxy(object):
     """
-    A proxy for MRC data arrays that rescales float32 data to integer range
-    on write. This preserves relative contrast when writing int16 or uint16
-    MRC files from float-valued simulation output.
+    A proxy for MRC data arrays that rescales float data to integer range on
+    write, so relative contrast survives conversion to int16 or uint16.
+
+    Frames are written one at a time, so a mapping taken from whatever frame
+    happens to be passing through would rescale every frame independently and
+    destroy relative intensity between them -- which matters most for a tilt
+    series whose tilts deliberately differ in dose. The mapping is therefore
+    fixed for the life of the proxy:
+
+    - given an explicit ``intensity_range``, that range is used for every frame,
+      and because it is recorded in the config the mapping is invertible;
+    - for single-frame output the range is taken from that one frame, which is
+      unambiguous;
+    - for multi-frame output with no explicit range, writing raises rather than
+      silently producing frames that cannot be compared with each other.
 
     """
 
-    def __init__(self, data):
+    def __init__(self, data, intensity_range=None):
         self._data = data
         self._dtype = data.dtype
+        self._range = tuple(intensity_range) if intensity_range else None
+        self._multi_frame = len(data.shape) > 2 and data.shape[0] > 1
 
     @property
     def shape(self):
@@ -594,26 +608,40 @@ class IntegerRescalingProxy(object):
     def __getitem__(self, item):
         return self._data[item]
 
+    def _limits(self, value):
+        """The mapping to use, fixed across every frame of this file."""
+        if self._range is not None:
+            return self._range
+        if self._multi_frame:
+            raise RuntimeError(
+                "Writing %s to a multi-frame file needs an explicit intensity "
+                "range: frames are written one at a time, so without one each "
+                "frame would be rescaled independently and intensities could "
+                "not be compared between them. Set output.intensity_range in "
+                "the config, or write float16/float32 instead."
+                % np.dtype(self._dtype).name
+            )
+        # Single frame: its own range is the only sensible mapping
+        self._range = (float(np.min(value)), float(np.max(value)))
+        return self._range
+
     def __setitem__(self, item, value):
         value = np.asarray(value, dtype=np.float64)
-        vmin = np.min(value)
-        vmax = np.max(value)
-        if self._dtype == np.int16:
-            if vmax > vmin:
-                scale = 65534.0 / (vmax - vmin)  # map to [-32767, 32767]
-                value = (value - vmin) * scale - 32767.0
-            else:
-                value = np.zeros_like(value)
-            self._data[item] = np.clip(value, -32767, 32767).astype(np.int16)
-        elif self._dtype == np.uint16:
-            if vmax > vmin:
-                scale = 65535.0 / (vmax - vmin)
-                value = (value - vmin) * scale
-            else:
-                value = np.zeros_like(value)
-            self._data[item] = np.clip(value, 0, 65535).astype(np.uint16)
-        else:
+        if self._dtype not in (np.int16, np.uint16):
             self._data[item] = value
+            return
+
+        vmin, vmax = self._limits(value)
+        if self._dtype == np.int16:
+            lo, hi = -32767.0, 32767.0
+        else:
+            lo, hi = 0.0, 65535.0
+
+        if vmax > vmin:
+            value = lo + (value - vmin) * (hi - lo) / (vmax - vmin)
+        else:
+            value = np.full_like(value, lo)
+        self._data[item] = np.clip(value, lo, hi).astype(self._dtype)
 
 
 class MrcFileWriter(Writer):
@@ -622,7 +650,9 @@ class MrcFileWriter(Writer):
 
     """
 
-    def __init__(self, filename, shape, pixel_size, dtype="uint8"):
+    def __init__(
+        self, filename, shape, pixel_size, dtype="uint8", intensity_range=None
+    ):
         """
         Initialise the writer
 
@@ -631,6 +661,8 @@ class MrcFileWriter(Writer):
             shape (tuple): The shape of the data
             pixel_size (float): The pixel size
             dtype (str): The data type
+            intensity_range (tuple): The (min, max) mapped onto the integer
+                range when dtype is int16/uint16
 
         """
         # Get the dtype
@@ -663,7 +695,7 @@ class MrcFileWriter(Writer):
         # Set the data array. For integer dtypes, wrap in a rescaling proxy
         # so float32 simulation data is linearly rescaled to the integer range.
         if dtype in (np.dtype(np.int16), np.dtype(np.uint16)):
-            self._data = IntegerRescalingProxy(self.handle.data)
+            self._data = IntegerRescalingProxy(self.handle.data, intensity_range)
         else:
             self._data = self.handle.data
 
@@ -1173,7 +1205,15 @@ class Reader(object):
             raise RuntimeError(f"File with unknown extension: {filename}")
 
 
-def new(filename, shape=None, pixel_size=1, dtype="float32", vmin=None, vmax=None):
+def new(
+    filename,
+    shape=None,
+    pixel_size=1,
+    dtype="float32",
+    vmin=None,
+    vmax=None,
+    intensity_range=None,
+):
     """
     Create a new file for writing
 
@@ -1184,6 +1224,8 @@ def new(filename, shape=None, pixel_size=1, dtype="float32", vmin=None, vmax=Non
         dtype (object): The data type (only used with NexusWriter)
         vmin (int): The minimum value (only used in ImageWriter)
         vmax (int): The maximum value (only used in ImageWriter)
+        intensity_range (tuple): The (min, max) mapped onto the integer range
+            when writing int16/uint16 (only used in MrcFileWriter)
 
     Returns:
         object: The file writer
@@ -1191,7 +1233,7 @@ def new(filename, shape=None, pixel_size=1, dtype="float32", vmin=None, vmax=Non
     """
     extension = os.path.splitext(filename)[1].lower()
     if extension in [".mrc"]:
-        return MrcFileWriter(filename, shape, pixel_size, dtype)
+        return MrcFileWriter(filename, shape, pixel_size, dtype, intensity_range)
     elif extension in [".h5", ".hdf5", ".nx", ".nxs", ".nexus", "nxtomo"]:
         return NexusWriter(filename, shape, pixel_size, dtype)
     elif extension in [".png", ".jpg", ".jpeg", ".tif", ".tiff"]:

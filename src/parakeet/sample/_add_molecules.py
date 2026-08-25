@@ -58,8 +58,11 @@ def add_single_molecule(sample, name):
 
     # Get atom data bounds
     coords = atoms.data[["x", "y", "z"]]
-    x0 = np.min(coords, axis=0) + sample.centre
-    x1 = np.max(coords, axis=0) + sample.centre
+    # to_numpy(): the reduction yields a Series labelled x/y/z, and everything
+    # downstream (here and is_box_inside_shape) indexes it positionally, which
+    # pandas deprecates and will eventually raise on.
+    x0 = np.min(coords, axis=0).to_numpy() + sample.centre
+    x1 = np.max(coords, axis=0).to_numpy() + sample.centre
 
     # Check the coords
     assert is_box_inside_shape((x0, x1), sample.centre, sample.shape)

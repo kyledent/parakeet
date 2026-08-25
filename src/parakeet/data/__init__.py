@@ -22,15 +22,18 @@ def get_remote_pdb(pdb_id: str) -> tuple:
     # Get the fetcher
     fetcher = profet.Fetcher()
 
-    # Download the data
+    # Download the data. Name the file after the id we asked for: profet only
+    # returns a name when called with filesave=True, and otherwise hands back
+    # None, which would name every structure "None.cif" and make each download
+    # overwrite the last.
     filedata = None
     filename = None
     for filetype in ["cif", "pdb"]:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            filename, filedata = fetcher.get_file(pdb_id, filetype=filetype)
+            _, filedata = fetcher.get_file(pdb_id, filetype=filetype)
             if filedata is not None:
-                filename = "%s.%s" % (filename, filetype)
+                filename = "%s.%s" % (pdb_id, filetype)
                 break
     else:
         raise RuntimeError("No PDB or CIF file found")

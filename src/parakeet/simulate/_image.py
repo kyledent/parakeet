@@ -250,6 +250,7 @@ def _image_Config(config: parakeet.config.Config, optics_file: str, image_file: 
         shape=simulation.shape,
         pixel_size=simulation.pixel_size,
         dtype=output_dtype,
+        intensity_range=config.output.intensity_range,
     )
 
     # Propagate the particle positions

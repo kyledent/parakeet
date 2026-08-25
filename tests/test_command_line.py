@@ -335,7 +335,7 @@ def test_pdb_get1(config_path):
 
 def test_pdb_get2(config_path):
     if os.getenv("CI"):
-        pytest.skip("Doesn't work on github workflow")
+        pytest.skip("Needs network access")
         return
     directory = os.path.abspath(config_path)
     parakeet.command_line.pdb.get(["1uad", "-d", directory])

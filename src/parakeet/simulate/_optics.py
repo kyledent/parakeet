@@ -549,6 +549,7 @@ def _optics_Config(
         shape=simulation.shape,
         pixel_size=simulation.pixel_size,
         dtype=output_dtype,
+        intensity_range=config.output.intensity_range,
     )
 
     # Propagate the particle positions

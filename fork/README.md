@@ -4,7 +4,7 @@ What this fork changes, and why. One document per feature that exists in the cod
 
 | Document | Feature | State |
 |---|---|---|
-| [OUTPUT_FORMATS.md](OUTPUT_FORMATS.md) | Configurable output data type (`float16` default, `float32`/`int16`/`uint16`) | shipped — but integer output rescales per frame, see the limitation note |
+| [OUTPUT_FORMATS.md](OUTPUT_FORMATS.md) | Configurable output data type (`float16` default, `float32`/`int16`/`uint16`) | shipped |
 | [fiducials.md](fiducials.md) | Gold fiducial nanoparticles, `parakeet sample add_fiducials` | shipped |
 | [support_film.md](support_film.md) | Holey carbon / gold foil support with a circular hole | **model present, not wired into the pipeline** |
 
