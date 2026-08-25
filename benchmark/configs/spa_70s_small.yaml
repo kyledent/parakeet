@@ -1,0 +1,66 @@
+# 70S ribosome, untilted single-particle exposure (small)
+#
+# A smaller field with fewer particles, for a first run or a smaller
+# card. Same specimen and optics as spa_70s_small.yaml.
+#
+#
+#
+#
+#   parakeet run -c benchmark/configs/spa_70s_small.yaml -s sample.h5 \
+#
+# See benchmark/README.md. Sized for a 32 GB GPU; use spa_70s_small.yaml on
+
+microscope:
+  beam:
+    energy: 300                        # keV
+    electrons_per_angstrom: 40.0       # total exposure for the single image
+    energy_spread: 2.66e-6             # Schottky FEG
+    acceleration_voltage_spread: 0.8e-6
+    illumination_semiangle: 0.02       # mrad
+  lens:
+    c_10: -20000                       # 2 um underfocus, typical for SPA
+    c_30: 2.7                          # Cs (mm)
+    c_c: 2.7                           # Cc (mm)
+  detector:
+    nx: 1024
+    ny: 1024
+    pixel_size: 1.0                    # A/px
+
+sample:
+  box: [1024.0, 1024.0, 1000.0]        # z = 1000 A = 100 nm ice
+  centre: [512.0, 512.0, 500.0]
+  shape:
+    type: cuboid
+    cuboid:
+      length_x: 1024.0
+      length_y: 1024.0
+      length_z: 1000.0
+  molecules:
+    pdb:
+      - id: 4v5d                       # E. coli 70S ribosome
+        instances: 3                  # random positions and orientations
+  fiducials:
+    diameter: 100.0                    # 10 nm colloidal gold
+    count: 2
+    placement: both_surfaces           # as applied to a real grid
+    occupancy: 1.0
+
+scan:
+  mode: still
+  num_images: 1
+  start_angle: 0
+  step_angle: 0
+
+simulation:
+  ice: true                            # implicit GRF ice
+  inelastic_model: zero_loss           # energy-filtered, as most modern SPA is
+  slice_thickness: 3.0
+  margin: 100
+
+output:
+  dtype: float16
+
+multiprocessing:
+  device: gpu
+  nproc: 1
+  gpu_id: [0]

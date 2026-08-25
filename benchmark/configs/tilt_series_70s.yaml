@@ -1,0 +1,73 @@
+# 70S ribosome, dose-symmetric tilt series
+#
+# The same specimen as spa_70s.yaml -- E. coli 70S ribosomes (PDB 4V5D) in
+# 100 nm of vitreous ice with 10 nm gold fiducials on both ice surfaces --
+# imaged as a dose-symmetric tilt series. The two configs are deliberately
+# matched so the same specimen can be compared under both regimes.
+#
+# Fiducials are load-bearing here: they are what a tilt-series alignment
+# actually tracks, so a simulated series without them cannot exercise that
+# step of a processing pipeline.
+#
+#   parakeet run -c benchmark/configs/tilt_series_70s.yaml -s sample.h5 \
+#       -e exit_wave.h5 -o optics.h5 -i image.mrc
+#
+# 41 tilts at 3 e/A^2 is 123 e/A^2 total, against 40 for the single exposure:
+# the series pays for its extra views in dose, spread over many images.
+# See benchmark/README.md.
+
+microscope:
+  beam:
+    energy: 300                        # keV
+    electrons_per_angstrom: 3.0        # per tilt
+    energy_spread: 2.66e-6
+    acceleration_voltage_spread: 0.8e-6
+    illumination_semiangle: 0.02
+  lens:
+    c_10: -30000                       # 3 um underfocus, typical for tomography
+    c_30: 2.7
+    c_c: 2.7
+  detector:
+    nx: 2048
+    ny: 2048
+    pixel_size: 1.0
+
+sample:
+  box: [2048.0, 2048.0, 1000.0]        # z = 1000 A = 100 nm ice
+  centre: [1024.0, 1024.0, 500.0]
+  shape:
+    type: cuboid
+    cuboid:
+      length_x: 2048.0
+      length_y: 2048.0
+      length_z: 1000.0
+  molecules:
+    pdb:
+      - id: 4v5d
+        instances: 14
+  fiducials:
+    diameter: 100.0
+    count: 6
+    placement: both_surfaces
+    occupancy: 1.0
+
+scan:
+  mode: dose_symmetric                 # collect outward from 0 deg in both directions
+  num_images: 41                       # -60 to +60 in 3 deg steps
+  start_angle: -60
+  step_angle: 3
+  axis: [0, 1, 0]
+
+simulation:
+  ice: true
+  inelastic_model: zero_loss
+  slice_thickness: 3.0
+  margin: 100
+
+output:
+  dtype: float16
+
+multiprocessing:
+  device: gpu
+  nproc: 1
+  gpu_id: [0]

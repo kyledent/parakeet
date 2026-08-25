@@ -1,0 +1,68 @@
+# 70S ribosome, dose-symmetric tilt series (small)
+#
+# A smaller field, fewer particles and 9 tilts instead of 41, for a
+# first run or a smaller card. Same specimen and optics as
+# tilt_series_70s_small.yaml.
+#
+#
+#
+#
+#   parakeet run -c benchmark/configs/tilt_series_70s_small.yaml -s sample.h5 \
+#
+# See benchmark/README.md.
+
+microscope:
+  beam:
+    energy: 300                        # keV
+    electrons_per_angstrom: 3.0        # per tilt
+    energy_spread: 2.66e-6
+    acceleration_voltage_spread: 0.8e-6
+    illumination_semiangle: 0.02
+  lens:
+    c_10: -30000                       # 3 um underfocus, typical for tomography
+    c_30: 2.7
+    c_c: 2.7
+  detector:
+    nx: 1024
+    ny: 1024
+    pixel_size: 1.0
+
+sample:
+  box: [1024.0, 1024.0, 1000.0]        # z = 1000 A = 100 nm ice
+  centre: [512.0, 512.0, 500.0]
+  shape:
+    type: cuboid
+    cuboid:
+      length_x: 1024.0
+      length_y: 1024.0
+      length_z: 1000.0
+  molecules:
+    pdb:
+      - id: 4v5d
+        instances: 3
+  fiducials:
+    diameter: 100.0
+    count: 2
+    placement: both_surfaces
+    occupancy: 1.0
+
+scan:
+  mode: dose_symmetric                 # collect outward from 0 deg in both directions
+  num_images: 9                        # -60 to +60 in 15 deg steps
+  start_angle: -60
+  step_angle: 15
+  axis: [0, 1, 0]
+
+simulation:
+  ice: true
+  inelastic_model: zero_loss
+  slice_thickness: 3.0
+  margin: 100
+
+output:
+  dtype: float16
+
+multiprocessing:
+  device: gpu
+  nproc: 1
+  gpu_id: [0]
