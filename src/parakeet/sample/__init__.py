@@ -2097,4 +2097,5 @@ from parakeet.sample._add_molecules import * # noqa
 from parakeet.sample._mill import * # noqa
 from parakeet.sample._sputter import * # noqa
 from parakeet.sample._fiducials import * # noqa
+from parakeet.sample._support_film import * # noqa
 # fmt: on

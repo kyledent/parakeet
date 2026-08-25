@@ -335,6 +335,36 @@ class Ice(BaseModel):
     density: float = Field(940, description="The density of the ice (Kg/m3)")
 
 
+class SupportFilmMaterial(str, Enum):
+    """
+    An enumeration of support film materials
+
+    """
+
+    carbon = "carbon"
+    gold = "gold"
+    none = "none"
+
+
+class SupportFilm(BaseModel):
+    """
+    A model to describe a support film (holey carbon/gold foil) with a circular hole
+
+    """
+
+    enabled: bool = Field(False, description="Enable support film simulation")
+    material: SupportFilmMaterial = Field("carbon", description="Support film material")
+    thickness: float = Field(
+        120, description="Film thickness in Angstroms (12 nm typical for Quantifoil)"
+    )
+    hole_diameter: float = Field(
+        12000, description="Hole diameter in Angstroms (1.2 um = 12000 A)"
+    )
+    density: Optional[float] = Field(
+        None, description="Override density (g/cm^3). Auto-set from material if None."
+    )
+
+
 class Fiducial(BaseModel):
     """
     A model to describe gold fiducial nanoparticles for tilt-series alignment.
@@ -443,6 +473,10 @@ class Sample(BaseModel):
 
     fiducials: Optional[Fiducial] = Field(
         None, description="Gold fiducial nanoparticle parameters."
+    )
+
+    support_film: Optional[SupportFilm] = Field(
+        None, description="Support film (holey carbon/gold foil) parameters."
     )
 
     motion: Optional[SampleMotion] = Field(
