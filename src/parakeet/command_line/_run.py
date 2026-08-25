@@ -117,6 +117,7 @@ def get_parser(parser: ArgumentParser = None) -> ArgumentParser:
             "sample",
             "sample.new",
             "sample.add_molecules",
+            "sample.add_fiducials",
             "simulate",
             "simulate.exit_wave",
             "simulate.optics",

@@ -107,7 +107,7 @@ def _run_Config(
     """
 
     # The sample steps
-    sample_steps = ["sample.new", "sample.add_molecules"]
+    sample_steps = ["sample.new", "sample.add_molecules", "sample.add_fiducials"]
 
     # The simulate steps
     simulate_steps = ["simulate.exit_wave", "simulate.optics", "simulate.image"]
@@ -133,6 +133,13 @@ def _run_Config(
     # Add the molecules
     if "sample.add_molecules" in steps:
         sample = parakeet.sample.add_molecules(config.sample, sample)  # type: ignore
+
+    # Add fiducials
+    if "sample.add_fiducials" in steps:
+        if config.sample.fiducials:
+            sample = parakeet.sample.add_fiducials(config.sample.fiducials, sample)  # type: ignore
+        else:
+            logger.info("No fiducial parameters in config, skipping")
 
     # Simulate the exit wave
     if "simulate.exit_wave" in steps:

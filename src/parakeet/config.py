@@ -335,6 +335,50 @@ class Ice(BaseModel):
     density: float = Field(940, description="The density of the ice (Kg/m3)")
 
 
+class Fiducial(BaseModel):
+    """
+    A model to describe gold fiducial nanoparticles for tilt-series alignment.
+
+    Gold fiducials (typically 6-10 nm colloidal gold) are placed on or within
+    the ice layer to provide high-contrast reference points for tilt-series
+    alignment in IMOD, AreTomo, and WarpTools workflows.
+
+    """
+
+    diameter: float = Field(
+        100,
+        description="Fiducial diameter in Angstroms (e.g. 60 for 6 nm, 100 for 10 nm)",
+        gt=0,
+    )
+
+    count: int = Field(
+        10,
+        description="Number of fiducial particles to place",
+        gt=0,
+    )
+
+    placement: str = Field(
+        "surface",
+        description=(
+            "Where to place fiducials: "
+            "'surface' (top of ice), "
+            "'both_surfaces' (top and bottom), "
+            "'volume' (random in ice volume)"
+        ),
+    )
+
+    occupancy: float = Field(
+        1.0,
+        description=(
+            "Atom occupancy for gold atoms. Values > 1.0 boost scattering "
+            "strength to compensate for GRF ice overlap (ice potential is "
+            "added inside fiducial volume). Try 1.5-2.0 if fiducials appear "
+            "too faint with implicit ice."
+        ),
+        gt=0,
+    )
+
+
 class Sputter(BaseModel):
     """
     A model to describe a sputter coating to the sample
@@ -395,6 +439,10 @@ class Sample(BaseModel):
 
     sputter: Optional[Sputter] = Field(
         None, description="The sputter coating model parameters."
+    )
+
+    fiducials: Optional[Fiducial] = Field(
+        None, description="Gold fiducial nanoparticle parameters."
     )
 
     motion: Optional[SampleMotion] = Field(

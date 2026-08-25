@@ -78,6 +78,12 @@ def add_sample_command(parser: ArgumentParser):
             help=sample._add_molecules.get_description(),
         )
     )
+    sample._fiducials.get_parser(
+        subparsers.add_parser(
+            "add_fiducials",
+            help=sample._fiducials.get_description(),
+        )
+    )
     sample._mill.get_parser(
         subparsers.add_parser("mill", help=sample._mill.get_description())
     )
@@ -305,6 +311,7 @@ def sample_main(parser, args):
         "new": sample._new.new_impl,
         "show": sample._show.show_impl,
         "add_molecules": sample._add_molecules.add_molecules_impl,
+        "add_fiducials": sample._fiducials.add_fiducials_impl,
         "mill": sample._mill.mill_impl,
         "sputter": sample._sputter.sputter_impl,
     }[args.sample_command](args)
