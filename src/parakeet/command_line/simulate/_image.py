@@ -74,6 +74,18 @@ def get_parser(parser: ArgumentParser = None) -> ArgumentParser:
         dest="image",
         help="The filename for the image",
     )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        choices=["float16", "float32", "int16", "uint16"],
+        default=None,
+        dest="dtype",
+        help=(
+            "Output data type. Overrides config output.dtype. "
+            "float16 (default) halves file size vs float32. "
+            "int16/uint16 apply linear rescaling to integer range."
+        ),
+    )
 
     return parser
 
@@ -91,7 +103,7 @@ def image_impl(args):
     parakeet.command_line.configure_logging()
 
     # Do the work
-    parakeet.simulate.image(args.config, args.optics, args.image)
+    parakeet.simulate.image(args.config, args.optics, args.image, dtype=args.dtype)
 
     # Write some timing stats
     logger.info("Time taken: %.2f seconds" % (time.time() - start_time))

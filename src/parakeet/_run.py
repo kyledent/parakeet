@@ -36,6 +36,7 @@ def run(
     nproc: int = None,
     gpu_id: list = None,
     steps: list = None,
+    dtype: str = None,
 ):
     """
     Simulate the TEM image from the sample
@@ -55,6 +56,7 @@ def run(
         nproc: The number of processes
         gpu_id: The list of gpu ids
         steps: Choose the steps to run
+        dtype: Output data type (overrides config). One of float16, float32, int16, uint16.
 
     """
 
@@ -68,6 +70,10 @@ def run(
         config.multiprocessing.nproc = nproc
     if gpu_id is not None:
         config.multiprocessing.gpu_id = gpu_id
+
+    # CLI dtype overrides config
+    if dtype is not None:
+        config.output.dtype = dtype
 
     # Print some options
     parakeet.config.show(config)

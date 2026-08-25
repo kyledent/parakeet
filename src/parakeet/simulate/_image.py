@@ -176,7 +176,7 @@ def simulation_factory(
 
 
 @singledispatch
-def image(config_file, optics_file: str, image_file: str):
+def image(config_file, optics_file: str, image_file: str, dtype: str = None):
     """
     Simulate the image with noise
 
@@ -184,11 +184,16 @@ def image(config_file, optics_file: str, image_file: str):
         config_file: The config filename
         optics_file: The optics image filename
         image_file: The output image filename
+        dtype: Output data type (overrides config). One of float16, float32, int16, uint16.
 
     """
 
     # Load the full configuration
     config = parakeet.config.load(config_file)
+
+    # CLI dtype overrides config
+    if dtype is not None:
+        config.output.dtype = dtype
 
     # Print some options
     parakeet.config.show(config)
@@ -208,6 +213,9 @@ def _image_Config(config: parakeet.config.Config, optics_file: str, image_file: 
         image_file: The output image filename
 
     """
+
+    # Resolve output dtype
+    output_dtype = np.dtype(config.output.dtype)
 
     # Create the microscope
     microscope = parakeet.microscope.new(config.microscope)
@@ -236,12 +244,12 @@ def _image_Config(config: parakeet.config.Config, optics_file: str, image_file: 
     )
 
     # Create the writer
-    logger.info(f"Opening file: {image_file}")
+    logger.info(f"Opening file: {image_file} (dtype={output_dtype})")
     writer = parakeet.io.new(
         image_file,
         shape=simulation.shape,
         pixel_size=simulation.pixel_size,
-        dtype=np.float32,
+        dtype=output_dtype,
     )
 
     # Propagate the particle positions

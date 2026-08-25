@@ -802,6 +802,34 @@ class Multiprocessing(BaseModel):
     gpu_id: List[int] = Field([0], description="The GPU id for each thread")
 
 
+class OutputDType(str, Enum):
+    """
+    Supported output data types for MRC/HDF5 image files
+
+    """
+
+    float16 = "float16"
+    float32 = "float32"
+    int16 = "int16"
+    uint16 = "uint16"
+
+
+class Output(BaseModel):
+    """
+    Output format parameters
+
+    """
+
+    dtype: OutputDType = Field(
+        "float16",
+        description=(
+            "Output data type for image and optics files. "
+            "float16 (default) halves file size vs float32. "
+            "int16/uint16 apply linear rescaling to integer range."
+        ),
+    )
+
+
 class Config(BaseModel):
     """
     The Parakeet configuration parameters
@@ -827,6 +855,8 @@ class Config(BaseModel):
     multiprocessing: Multiprocessing = Field(
         Multiprocessing(), description="The multiprocessing parameters"
     )
+
+    output: Output = Field(Output(), description="The output format parameters")
 
 
 def default() -> Config:

@@ -127,6 +127,17 @@ def get_parser(parser: ArgumentParser = None) -> ArgumentParser:
         dest="steps",
         help="Which simulation steps to run",
     )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        choices=["float16", "float32", "int16", "uint16"],
+        default=None,
+        dest="dtype",
+        help=(
+            "Output data type. Overrides config output.dtype. "
+            "float16 (default) halves file size vs float32."
+        ),
+    )
 
     return parser
 
@@ -154,6 +165,7 @@ def run_impl(args):
         args.nproc,
         args.gpu_id,
         args.steps,
+        args.dtype,
     )
 
     # Print output

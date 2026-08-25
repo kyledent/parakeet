@@ -571,6 +571,51 @@ class MrcfileHeader(Header):
         return self._handle.shape[0]
 
 
+class IntegerRescalingProxy(object):
+    """
+    A proxy for MRC data arrays that rescales float32 data to integer range
+    on write. This preserves relative contrast when writing int16 or uint16
+    MRC files from float-valued simulation output.
+
+    """
+
+    def __init__(self, data):
+        self._data = data
+        self._dtype = data.dtype
+
+    @property
+    def shape(self):
+        return self._data.shape
+
+    @property
+    def dtype(self):
+        return self._dtype
+
+    def __getitem__(self, item):
+        return self._data[item]
+
+    def __setitem__(self, item, value):
+        value = np.asarray(value, dtype=np.float64)
+        vmin = np.min(value)
+        vmax = np.max(value)
+        if self._dtype == np.int16:
+            if vmax > vmin:
+                scale = 65534.0 / (vmax - vmin)  # map to [-32767, 32767]
+                value = (value - vmin) * scale - 32767.0
+            else:
+                value = np.zeros_like(value)
+            self._data[item] = np.clip(value, -32767, 32767).astype(np.int16)
+        elif self._dtype == np.uint16:
+            if vmax > vmin:
+                scale = 65535.0 / (vmax - vmin)
+                value = (value - vmin) * scale
+            else:
+                value = np.zeros_like(value)
+            self._data[item] = np.clip(value, 0, 65535).astype(np.uint16)
+        else:
+            self._data[item] = value
+
+
 class MrcFileWriter(Writer):
     """
     Write to an mrcfile
@@ -615,8 +660,12 @@ class MrcFileWriter(Writer):
             exttyp=b"FEI1",
         )
 
-        # Set the data array
-        self._data = self.handle.data
+        # Set the data array. For integer dtypes, wrap in a rescaling proxy
+        # so float32 simulation data is linearly rescaled to the integer range.
+        if dtype in (np.dtype(np.int16), np.dtype(np.uint16)):
+            self._data = IntegerRescalingProxy(self.handle.data)
+        else:
+            self._data = self.handle.data
 
         # Create the header info
         self._header = MrcfileHeader(extended_header)

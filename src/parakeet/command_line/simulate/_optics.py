@@ -96,6 +96,18 @@ def get_parser(parser: ArgumentParser = None) -> ArgumentParser:
         dest="optics",
         help="The filename for the optics",
     )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        choices=["float16", "float32", "int16", "uint16"],
+        default=None,
+        dest="dtype",
+        help=(
+            "Output data type. Overrides config output.dtype. "
+            "float16 (default) halves file size vs float32. "
+            "int16/uint16 apply linear rescaling to integer range."
+        ),
+    )
 
     return parser
 
@@ -120,6 +132,7 @@ def optics_impl(args):
         device=args.device,
         nproc=args.nproc,
         gpu_id=args.gpu_id,
+        dtype=args.dtype,
     )
 
     # Write some timing stats
