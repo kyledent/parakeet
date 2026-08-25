@@ -24,7 +24,10 @@ from parakeet.microscope import Microscope
 from parakeet.scan import Scan
 from functools import singledispatch
 from parakeet.simulate.simulation import Simulation
-from parakeet.simulate.engine import SimulationEngine
+import multem
+from parakeet.simulate.engine import SimulationEngine, defocus_spread
+from parakeet.simulate._fft_backend import fft2, ifft2, from_numpy, to_numpy
+from parakeet.simulate._fast_ctf import compute_ctf as fast_ctf
 from parakeet.microscope import Microscope
 from parakeet.scan import Scan
 
@@ -77,77 +80,6 @@ class OpticsImageSimulator(object):
 
         """
 
-        def compute_image(
-            psi,
-            microscope,
-            simulation,
-            x_fov,
-            y_fov,
-            offset,
-            device,
-            gpu_id,
-            defocus=None,
-        ):
-            # Set the defocus
-            if defocus is not None:
-                microscope.lens.c_10 = defocus
-
-            # Create the simulation engine
-            simulate = SimulationEngine(
-                device,
-                gpu_id,
-                microscope,
-                simulation["slice_thickness"],
-                simulation["margin"],
-                "HRTEM",
-            )
-
-            # Set the specimen size
-            simulate.input.spec_lx = x_fov + offset * 2
-            simulate.input.spec_ly = y_fov + offset * 2
-            simulate.input.spec_lz = x_fov  # self.sample.containing_box[1][2]
-
-            # Compute and apply the CTF
-            ctf = simulate.ctf()
-
-            # Apply an objective aperture cutoff frequency
-            if microscope.objective_aperture_cutoff_freq is not None:
-                qy = np.fft.fftfreq(ctf.shape[0], d=pixel_size)
-                qx = np.fft.fftfreq(ctf.shape[1], d=pixel_size)
-                q = np.sqrt(qy[:, None] ** 2 + qx[None, :] ** 2)
-                mask = q < microscope.objective_aperture_cutoff_freq
-                ctf = ctf * mask
-
-            # Add the effect of the phase plate
-            if microscope.phase_plate.use:
-                ctf = ctf * parakeet.simulate.phase_plate.compute_phase_shift(
-                    ctf.shape,
-                    microscope.detector.pixel_size,
-                    microscope.phase_plate.phase_shift,
-                    microscope.phase_plate.radius,
-                )
-            # Compute the B factor for radiation damage
-            # if simulation["radiation_damage_model"]:
-            #    sigma_B = sqrt(
-            #        simulation["sensitivity_coefficient"]
-            #        * microscope.beam.electrons_per_angstrom
-            #        * (index + 1)
-            #    )
-            #    pixel_size = microscope.detector.pixel_size
-            #    Y, X = np.mgrid[0 : ctf.shape[0], 0 : ctf.shape[1]]
-            #    X = (X - ctf.shape[1] // 2) / (pixel_size * ctf.shape[1])
-            #    Y = (Y - ctf.shape[0] // 2) / (pixel_size * ctf.shape[0])
-            #    q = np.sqrt(X ** 2 + Y ** 2)
-            #    b_factor_blur = np.exp(-2 * pi ** 2 * q ** 2 * sigma_B ** 2)
-            #    b_factor_blur = np.fft.fftshift(b_factor_blur)
-            #    ctf = ctf * b_factor_blur
-
-            # Compute and apply the CTF
-            psi = np.fft.ifft2(np.fft.fft2(psi) * ctf)
-            image = np.abs(psi) ** 2
-
-            return image
-
         # Get the rotation angle
         angle = self.scan.angles[index]
         defocus_offset = self.scan.defocus_offset[index]
@@ -164,6 +96,67 @@ class OpticsImageSimulator(object):
         margin = self.simulation["margin"]
         offset = margin * pixel_size
 
+        # CTF grid dimensions (detector + margin)
+        ctf_ny = ny + 2 * margin
+        ctf_nx = nx + 2 * margin
+        ctf_shape = (ctf_ny, ctf_nx)
+
+        # Pre-compute frequency grids (shared across all CTF evaluations this frame)
+        qy = np.fft.fftfreq(ctf_ny, d=pixel_size)
+        qx = np.fft.fftfreq(ctf_nx, d=pixel_size)
+        q2_grid = qy[:, None] ** 2 + qx[None, :] ** 2
+        q_grid = np.sqrt(q2_grid)
+
+        # Pre-compute coherence parameters (shared across energy bins)
+        Cc_A = self.microscope.lens.c_c * 1e7  # mm -> A
+        ds = defocus_spread(
+            Cc_A,
+            self.microscope.beam.energy_spread,
+            self.microscope.lens.current_spread,
+            self.microscope.beam.acceleration_voltage_spread,
+        )
+        sigma_df = multem.iehwgd_to_sigma(ds)
+        sigma_source = multem.mrad_to_sigma(
+            self.microscope.beam.energy,
+            self.microscope.beam.illumination_semiangle,
+        )
+
+        # Pre-compute aperture mask and phase plate shift (constant across energy bins)
+        aperture_mask = None
+        if self.microscope.objective_aperture_cutoff_freq is not None:
+            aperture_mask = q_grid < self.microscope.objective_aperture_cutoff_freq
+
+        phase_plate_shift = None
+        if self.microscope.phase_plate.use:
+            phase_plate_shift = parakeet.simulate.phase_plate.compute_phase_shift(
+                ctf_shape,
+                pixel_size,
+                self.microscope.phase_plate.phase_shift,
+                self.microscope.phase_plate.radius,
+            )
+
+        def _compute_ctf_and_apply(
+            psi_fft, energy_kev, c_10, c_30_mm, sigma_df_val, sigma_src_val
+        ):
+            """Compute CTF via fast pure-Python path and apply to FFT'd exit wave."""
+            ctf = fast_ctf(
+                ctf_shape,
+                pixel_size,
+                energy_kev,
+                c_10,
+                c_30_mm,
+                sigma_df_val,
+                sigma_src_val,
+                q2=q2_grid,
+                q=q_grid,
+            )
+            if aperture_mask is not None:
+                ctf = ctf * aperture_mask
+            if phase_plate_shift is not None:
+                ctf = ctf * phase_plate_shift
+            psi_out = to_numpy(ifft2(psi_fft * from_numpy(ctf)))
+            return np.abs(psi_out) ** 2
+
         # Get the specimen atoms
         logger.info(f"Simulating image {index+1}")
 
@@ -179,33 +172,31 @@ class OpticsImageSimulator(object):
         # aberration to zero
         shape = self.sample["shape"]
         energy_shift = 0
+
+        # Pre-compute forward FFT (shared across all CTF evaluations)
+        psi_fft = fft2(psi)
+
         if self.simulation["inelastic_model"] is None:
             # If no inelastic model just calculate image as normal
-            image = compute_image(
-                psi,
-                microscope,
-                self.simulation,
-                x_fov,
-                y_fov,
-                offset,
-                self.device,
-                self.gpu_id,
+            image = _compute_ctf_and_apply(
+                psi_fft,
+                microscope.beam.energy,
                 defocus,
+                microscope.lens.c_30,
+                sigma_df,
+                sigma_source,
             )
             electron_fraction = 1.0
 
         elif self.simulation["inelastic_model"] == "zero_loss":
             # Compute the image
-            image = compute_image(
-                psi,
-                microscope,
-                self.simulation,
-                x_fov,
-                y_fov,
-                offset,
-                self.device,
-                self.gpu_id,
+            image = _compute_ctf_and_apply(
+                psi_fft,
+                microscope.beam.energy,
                 defocus,
+                microscope.lens.c_30,
+                sigma_df,
+                sigma_source,
             )
 
             # Calculate the fraction of electrons in the zero loss peak
@@ -280,7 +271,7 @@ class OpticsImageSimulator(object):
 
             # Get the threshold to exclude bins that don't contribute much
             threshold = min(0.01 / len(bin_energy), max(bin_weight))
-            print("Threshold weight: %f" % (threshold))
+            logger.debug("Threshold weight: %f", threshold)
 
             # Select based on threshold
             selection = bin_weight >= threshold
@@ -307,42 +298,45 @@ class OpticsImageSimulator(object):
             # defocus_mean = np.average(defocus1, weights=bin_weight)
             # defocus1 = defocus1 + (defocus0 - defocus_mean)
 
-            # Loop through all energies and sum images
+            # Use Cs from microscope (may be zeroed for cc_corrected model)
+            c_30_for_bins = microscope.lens.c_30
+
+            # Loop through all energies using fast pure-Python CTF
             image = None
             for energy, energy_spread, defocus, weight in zip(
                 energy1, energy_spread1, defocus1, bin_weight
             ):
-                # Add the energy loss
-                microscope.beam.energy = energy  # keV
-
-                # Compute the energy spread
-                microscope.beam.energy_spread = energy_spread  # dE / E
-
-                # Print some details
-                print(
-                    "Energy: %f eV; Energy spread: %f eV; Weight: %f; Defocus: %f"
-                    % (
-                        microscope.beam.energy * 1000,
-                        microscope.beam.energy_spread * microscope.beam.energy * 1000,
-                        weight,
-                        defocus,
-                    )
-                )
-
-                # Compute the MPL image
-                image_n = weight * compute_image(
-                    psi,
-                    microscope,
-                    self.simulation,
-                    x_fov,
-                    y_fov,
-                    offset,
-                    self.device,
-                    self.gpu_id,
+                logger.debug(
+                    "Energy: %f eV; Energy spread: %f eV; Weight: %f; Defocus: %f",
+                    energy * 1000,
+                    energy_spread * energy * 1000,
+                    weight,
                     defocus,
                 )
 
-                # Add image component
+                # Compute per-bin defocus spread sigma
+                Cc_A_bin = microscope.lens.c_c * 1e7
+                ds_bin = defocus_spread(
+                    Cc_A_bin,
+                    energy_spread,
+                    microscope.lens.current_spread,
+                    microscope.beam.acceleration_voltage_spread,
+                )
+                sigma_df_bin = multem.iehwgd_to_sigma(ds_bin)
+                sigma_src_bin = multem.mrad_to_sigma(
+                    energy, microscope.beam.illumination_semiangle
+                )
+
+                image_n = weight * _compute_ctf_and_apply(
+                    psi_fft,
+                    energy,
+                    defocus,
+                    c_30_for_bins,
+                    sigma_df_bin,
+                    sigma_src_bin,
+                )
+
+                # Accumulate
                 if image is None:
                     image = image_n
                 else:
@@ -351,8 +345,7 @@ class OpticsImageSimulator(object):
             # Compute the electron fraction
             electron_fraction = np.sum(bin_weight)
 
-        # Print the electron fraction
-        print("Electron fraction = %.2f" % electron_fraction)
+        logger.debug("Electron fraction = %.2f", electron_fraction)
 
         # Remove margin
         j0 = margin

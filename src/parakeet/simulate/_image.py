@@ -22,6 +22,7 @@ from parakeet.microscope import Microscope
 from parakeet.scan import Scan
 from functools import singledispatch
 from parakeet.simulate.simulation import Simulation
+from parakeet.simulate._fft_backend import fft2, ifft2, fftshift, to_numpy, from_numpy
 
 
 __all__ = ["image"]
@@ -101,10 +102,10 @@ class ImageSimulator(object):
             dqe = parakeet.dqe.DQETable().dqe_fs(
                 energy, electrons_per_second, image.shape
             )
-            dqe = np.fft.fftshift(dqe)
-            fft_image = np.fft.fft2(image)
-            fft_image *= dqe
-            image = np.real(np.fft.ifft2(fft_image))
+            dqe_shifted = fftshift(from_numpy(dqe))
+            fft_image = fft2(image)
+            fft_image *= dqe_shifted
+            image = np.real(to_numpy(ifft2(fft_image)))
 
         # Ensure all pixels are >= 0
         image = np.clip(image, 0, None)

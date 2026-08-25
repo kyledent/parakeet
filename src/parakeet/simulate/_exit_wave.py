@@ -193,17 +193,20 @@ class ExitWaveImageSimulator(object):
         logger.info("   Got spec atoms")
 
         if len(atoms.data) > 0:
-            print(
-                "Atoms X min/max: %.1f, %.1f"
-                % (atoms.data["x"].min(), atoms.data["x"].max())
+            logger.debug(
+                "Atoms X min/max: %.1f, %.1f",
+                atoms.data["x"].min(),
+                atoms.data["x"].max(),
             )
-            print(
-                "Atoms Y min/max: %.1f, %.1f"
-                % (atoms.data["y"].min(), atoms.data["y"].max())
+            logger.debug(
+                "Atoms Y min/max: %.1f, %.1f",
+                atoms.data["y"].min(),
+                atoms.data["y"].max(),
             )
-            print(
-                "Atoms Z min/max: %.1f, %.1f"
-                % (atoms.data["z"].min(), atoms.data["z"].max())
+            logger.debug(
+                "Atoms Z min/max: %.1f, %.1f",
+                atoms.data["z"].min(),
+                atoms.data["z"].max(),
             )
 
         if self.simulation["ice"] == True:
