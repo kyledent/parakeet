@@ -55,6 +55,46 @@ parakeet run -c benchmark/configs/spa_70s_small.yaml \
 The wrapper exists only to run the stages separately so each can be timed; `parakeet run`
 does the same work in one call.
 
+## Generating a config from acquisition parameters
+
+The four shipped configs are a fixed pair. `make_config.py` writes new ones from the parameters
+you would actually set at a microscope, and does the conversions in between — aperture diameter
+to cutoff frequency, total dose and dose rate to per-image dose and exposure time, filter state
+to inelastic model:
+
+```bash
+# 300 keV, K3, 100 nm ice, 100 um aperture, 20 eV slit in, 40 e/A^2 at 8 e/px/s
+benchmark/make_config.py -o my_spa.yaml
+
+# Falcon 4i, slit retracted, 150 nm ice, 41-tilt series
+benchmark/make_config.py --detector falcon4i --slit retracted --ice 150 \
+    --mode tilt-series --tilts 41 -o my_ts.yaml
+
+# 200 keV, MPL-centred filter so the slit width actually does something
+benchmark/make_config.py --kv 200 --filter-model mpl --slit-width 20 \
+    --aperture 70 -o glacios.yaml
+```
+
+`--help` lists everything. The parameters it covers: `--kv`, `--detector {k3,falcon4i}`,
+`--pixel-size`, `--ice` (nm), `--aperture` (µm diameter, 0 to retract), `--slit
+{inserted,retracted}`, `--slit-width` (eV), `--filter-model
+{zero-loss,mpl,cc-corrected,none}`, `--total-dose` (e/Å²), `--dose-rate` (e/px/s), `--dqe`,
+`--mode {spa,tilt-series}` and the specimen options.
+
+**It also tells you when the simulation will not follow what you asked for**, as warnings on
+stderr and in a header comment in the generated file. There are three worth knowing about
+before you trust an output:
+
+| You set | What actually happens |
+|---|---|
+| `--slit-width` with the default `--filter-model zero-loss` | **Nothing.** That model scales the image by `exp(−t/λ)` and never reads the width; a 10 eV and a 40 eV slit give bit-identical images. Use `--filter-model mpl` for the width to matter |
+| `--kv` other than 300 | The Landau loss distribution follows the voltage, but the **inelastic mean free path is hardcoded at 3150 Å for 300 keV**, so the elastic/inelastic split is that of a 300 keV beam |
+| `--detector` with `--dqe` | Parakeet has **one** DQE curve, measured at 300 keV, not per-detector presets. The detector choice sets array size and pixel size only — noise transfer is identical for K3 and Falcon 4i |
+
+None of this is a defect in the generator; it is what the simulator does, established by reading
+and measuring the code. The full review is in the project's development notes as
+`ENERGY_FILTER_REVIEW.md`, along with the scripts that measure it.
+
 ## The configs
 
 | Config | Field | Particles | Acquisition | Total dose |
