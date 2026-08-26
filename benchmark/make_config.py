@@ -62,29 +62,53 @@ DETECTORS = {
 # that to "krios" or "talos" makes microscope.new() overwrite the beam energy
 # with 300 or 200 regardless of what the config says (src/parakeet/microscope.py),
 # which silently discards --kv. Explicit values avoid that.
+EMITTERS = {
+    # Nominal source energy spread. Thermo quote 0.7 eV for the X-FEG and
+    # <=0.3 eV for the E-CFEG; 0.3-0.4 eV and 0.8 eV are also reported for cold
+    # and Schottky sources in the literature. Override with --energy-spread-ev.
+    "schottky": {"dE_eV": 0.7, "description": "X-FEG (Schottky)"},
+    "cold": {"dE_eV": 0.3, "description": "E-CFEG (cold FEG)"},
+}
+
 MICROSCOPES = {
+    # Cs and Cc are the standard uncorrected Thermo objective values. The
+    # objective focal length matters because it sets what a physical aperture
+    # diameter corresponds to in spatial frequency, and it is NOT the same
+    # across the range: sourced values are marked, inferred ones flagged.
     "krios": {
         "kv": 300,
         "kv_options": [300, 200, 100],
         "cs": 2.7,
         "cc": 2.7,
-        "dE_eV": 0.9,
-        "description": "Thermo Titan Krios, XFEG",
+        "focal_length_mm": 3.5,
+        "focal_length_sourced": False,
+        "emitters": ["schottky", "cold"],
+        "default_emitter": "schottky",
+        "max_tilt": 70,
+        "description": "Thermo Titan Krios, C-TWIN objective (11 mm gap)",
     },
     "glacios": {
         "kv": 200,
-        "kv_options": [200],
+        "kv_options": [200, 120, 80],
         "cs": 2.7,
         "cc": 2.7,
-        "dE_eV": 0.9,
-        "description": "Thermo Glacios, XFEG",
+        "focal_length_mm": 3.4,
+        "focal_length_sourced": True,
+        "emitters": ["schottky", "cold"],
+        "default_emitter": "schottky",
+        "max_tilt": 70,
+        "description": "Thermo Glacios 2, C-TWIN objective (11 mm gap)",
     },
     "talos": {
         "kv": 200,
         "kv_options": [200, 120],
         "cs": 2.7,
         "cc": 2.7,
-        "dE_eV": 0.9,
+        "focal_length_mm": 3.5,
+        "focal_length_sourced": False,
+        "emitters": ["schottky"],
+        "default_emitter": "schottky",
+        "max_tilt": 70,
         "description": "Thermo Talos (Arctica 200 kV / L120C 120 kV)",
     },
     "tundra": {
@@ -92,8 +116,19 @@ MICROSCOPES = {
         "kv_options": [100],
         "cs": 2.7,
         "cc": 2.7,
-        "dE_eV": 1.0,
-        "description": "Thermo Tundra, 100 kV",
+        # Thermo state the Tundra objective arrangement gives a 2.3 mm focal
+        # length, chosen to reduce chromatic aberration at 100 kV. A physical
+        # aperture therefore cuts at a HIGHER spatial frequency than the same
+        # aperture on a Krios.
+        "focal_length_mm": 2.3,
+        "focal_length_sourced": True,
+        # The Tundra ships with an X-FEG. It is not a cold-FEG instrument.
+        "emitters": ["schottky"],
+        "default_emitter": "schottky",
+        # +/-15 degrees only: this is a single-particle instrument, not a
+        # tomography one.
+        "max_tilt": 15,
+        "description": "Thermo Tundra, 100 kV, X-FEG, short-focal-length objective",
     },
 }
 
@@ -271,6 +306,27 @@ def collect_model_caveats(args, warnings):
             "source spread are still the preset's."
         )
 
+    if args.emitter not in scope["emitters"]:
+        warnings.append(
+            f"the {args.microscope} is not offered with a {args.emitter} emitter "
+            f"({'/'.join(scope['emitters'])} only); using its "
+            f"{EMITTERS[args.emitter]['dE_eV']} eV spread anyway because you asked"
+        )
+    if not scope["focal_length_sourced"]:
+        warnings.append(
+            f"the objective focal length for {args.microscope} "
+            f"({args.objective_focal_length} mm) is a widely used figure rather than "
+            "one taken from a specification sheet; it only affects the conversion "
+            "from aperture diameter to cutoff frequency. Set "
+            "--objective-focal-length if you know yours."
+        )
+    if args.mode == "tilt-series" and args.tilt_range > scope["max_tilt"]:
+        warnings.append(
+            f"the {args.microscope} stage reaches +/-{scope['max_tilt']} degrees, but "
+            f"--tilt-range is {args.tilt_range:.0f}. The simulation will happily "
+            "produce tilts the instrument cannot."
+        )
+
     # Dose rate reaches exactly one thing: the DQE curve lookup.
     if not args.dqe:
         warnings.append(
@@ -327,6 +383,19 @@ def main():
         default=None,
         help="accelerating voltage, keV (default: the microscope's)",
     )
+    g.add_argument(
+        "--emitter",
+        choices=sorted(EMITTERS),
+        default=None,
+        help="field emitter (default: the microscope's). cold = E-CFEG (0.3 eV), "
+        "schottky = X-FEG (0.7 eV)",
+    )
+    g.add_argument(
+        "--energy-spread-ev",
+        type=float,
+        default=None,
+        help="source energy spread in eV, overriding the emitter's nominal value",
+    )
     g.add_argument("--cs", type=float, default=None, help="spherical aberration, mm")
     g.add_argument("--cc", type=float, default=None, help="chromatic aberration, mm")
     g.add_argument(
@@ -355,8 +424,8 @@ def main():
     g.add_argument(
         "--objective-focal-length",
         type=float,
-        default=3.5,
-        help="objective focal length, mm (default 3.5)",
+        default=None,
+        help="objective focal length, mm (default: the microscope's)",
     )
 
     g = p.add_argument_group("energy filter")
@@ -460,9 +529,15 @@ def main():
         args.cs = scope["cs"]
     if "cc" not in explicit:
         args.cc = scope["cc"]
+    if args.emitter is None:
+        args.emitter = scope["default_emitter"]
+    if "objective_focal_length" not in explicit:
+        args.objective_focal_length = scope["focal_length_mm"]
+    if args.energy_spread_ev is None:
+        args.energy_spread_ev = EMITTERS[args.emitter]["dE_eV"]
     if "energy_spread" not in explicit:
-        # dE/E from the nominal source spread at this voltage
-        args.energy_spread = scope["dE_eV"] / (args.kv * 1e3)
+        # dE/E from the source spread at this voltage
+        args.energy_spread = args.energy_spread_ev / (args.kv * 1e3)
 
     warnings = []
     config, dose_per_image, t_exp, pixel_size = build(args, warnings)
@@ -481,6 +556,8 @@ def main():
         "#   " + " ".join(shlex.quote(a) for a in sys.argv),
         "#",
         f"# {MICROSCOPES[args.microscope]['description']} at {args.kv:.0f} keV",
+        f"# {EMITTERS[args.emitter]['description']}, "
+        f"{args.energy_spread_ev} eV source spread (dE/E = {args.energy_spread:.2e})",
         f"# {DETECTORS[args.detector]['description']}",
         f"# {args.ice:.0f} nm ice, {pixel_size} A/px",
         f"# slit {args.slit}" + _slit_note(args, config),
