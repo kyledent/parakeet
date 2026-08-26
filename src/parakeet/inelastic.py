@@ -9,7 +9,16 @@
 import numpy as np
 import parakeet.landau
 import scipy.signal
-from math import sqrt, pi, cos, exp, log, ceil, floor
+from math import sqrt, pi, cos, exp, log, ceil, floor, factorial
+
+
+# Inelastic mean free path for amorphous ice at 300 keV. Note this does not
+# vary with beam energy, so results away from 300 keV carry that error.
+MEAN_FREE_PATH = 3150  # A
+
+# Low-loss plasmon energy for amorphous ice. Plural scattering is Poisson
+# distributed over multiples of this (Egerton, EELS in the Electron Microscope).
+ICE_PLASMON_ENERGY = 23.0  # eV
 
 
 def effective_thickness(shape, angle):
@@ -37,15 +46,54 @@ def effective_thickness(shape, angle):
     return abs(thickness)
 
 
-def zero_loss_fraction(shape, angle):
+def zero_loss_fraction(shape, angle, slit_width=None, plasmon_energy=None):
     """
-    Compute the zero loss fraction
+    Compute the fraction of electrons passed by a zero-loss energy filter.
+
+    Plural inelastic scattering is Poisson distributed: the fraction of
+    electrons that have lost exactly n plasmons is
+
+        P(n) = (t/lambda)^n exp(-t/lambda) / n!
+
+    at an energy loss of n * plasmon_energy. A slit centred on the zero-loss
+    peak passes P(0) plus any replica whose loss falls inside the window.
+
+    With no slit width this returns P(0) = exp(-t/lambda), which is the
+    narrow-slit limit and the behaviour this function has always had. A slit
+    narrower than twice the plasmon energy -- which covers the 10 to 40 eV
+    slits in normal use -- gives the same answer, so existing configs are
+    unaffected.
+
+    Note the losses are modelled as discrete plasmon replicas rather than by
+    integrating the Landau distribution used elsewhere in this module. Landau
+    describes energy loss in a continuous stopping medium and places its most
+    probable loss a few eV from zero, where real ice has almost no intensity;
+    integrating it over a 20 eV slit on 100 nm ice transmits 0.94 where the
+    plasmon picture gives 0.73. The Landau treatment remains the right tool for
+    the chromatic blur of the transmitted electrons, which is what it is used
+    for in the mp_loss and unfiltered paths.
+
+    Args:
+        shape: The sample shape
+        angle: The tilt angle (degrees)
+        slit_width: The energy filter slit width (eV), or None for a slit
+            narrow enough to pass only the zero-loss peak
+        plasmon_energy: The plasmon energy (eV), defaulting to amorphous ice
+
+    Returns:
+        float: The fraction of electrons passed by the filter
 
     """
     thickness = effective_thickness(shape, angle)
-    mean_free_path = 3150  # A for Amorphous Ice at 300 keV
-    electron_fraction = exp(-thickness / mean_free_path)
-    return electron_fraction
+    t_over_lambda = thickness / MEAN_FREE_PATH
+    if slit_width is None or slit_width <= 0:
+        return exp(-t_over_lambda)
+    if plasmon_energy is None:
+        plasmon_energy = ICE_PLASMON_ENERGY
+    n_max = int((slit_width / 2.0) // plasmon_energy)
+    return sum(
+        t_over_lambda**n * exp(-t_over_lambda) / factorial(n) for n in range(n_max + 1)
+    )
 
 
 def mp_loss_fraction(shape, angle):
@@ -54,8 +102,7 @@ def mp_loss_fraction(shape, angle):
 
     """
     thickness = effective_thickness(shape, angle)
-    mean_free_path = 3150  # A for Amorphous Ice at 300 keV
-    electron_fraction = exp(-thickness / mean_free_path)
+    electron_fraction = exp(-thickness / MEAN_FREE_PATH)
     return 1.0 - electron_fraction
 
 
@@ -174,8 +221,7 @@ class EnergyFilterOptimizer(object):
 
         """
         # Compute the fractions for the zero loss and energy losses
-        mean_free_path = 3150  # A for Amorphous Ice at 300 keV
-        return exp(-thickness / mean_free_path)
+        return exp(-thickness / MEAN_FREE_PATH)
 
     def energy_loss_distribution(self, energy, thickness):
         """

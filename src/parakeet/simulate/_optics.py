@@ -199,8 +199,13 @@ class OpticsImageSimulator(object):
                 sigma_source,
             )
 
-            # Calculate the fraction of electrons in the zero loss peak
-            electron_fraction = parakeet.inelastic.zero_loss_fraction(shape, angle)
+            # Calculate the fraction of electrons passed by the filter. The
+            # slit width is read here as well as in the mp_loss branch: a slit
+            # wide enough to admit a plasmon replica passes more than the
+            # zero-loss peak alone.
+            electron_fraction = parakeet.inelastic.zero_loss_fraction(
+                shape, angle, slit_width=self.simulation["mp_loss_width"]
+            )
 
             # Scale the image by the fraction of electrons
             image *= electron_fraction

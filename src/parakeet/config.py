@@ -843,7 +843,13 @@ class Simulation(BaseModel):
     )
 
     mp_loss_width: Optional[float] = Field(
-        None, description="The MPL energy filter width"
+        None,
+        description=(
+            "The energy filter slit width (eV). Used by the mp_loss model to "
+            "place the slit on the plasmon peak, and by the zero_loss model to "
+            "decide how many plasmon replicas the slit admits. A slit narrower "
+            "than twice the plasmon energy passes the zero-loss peak only."
+        ),
     )
 
     mp_loss_position: MPLPosition = Field(
