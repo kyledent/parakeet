@@ -75,7 +75,23 @@ benchmark/make_config.py --kv 200 --filter-model mpl --slit-width 20 \
     --aperture 70 -o glacios.yaml
 ```
 
-`--help` lists everything. The parameters it covers: `--kv`, `--detector {k3,falcon4i}`,
+`--microscope {krios,glacios,talos,tundra}` sets voltage, Cs, Cc and source energy spread
+together; any of them can still be overridden individually:
+
+| preset | kV | Cs | Cc | source dE |
+|---|---|---|---|---|
+| `krios` | 300 (also 200, 100) | 2.7 mm | 2.7 mm | 0.9 eV |
+| `glacios` | 200 | 2.7 mm | 2.7 mm | 0.9 eV |
+| `talos` | 200 (Arctica), 120 (L120C) | 2.7 mm | 2.7 mm | 0.9 eV |
+| `tundra` | 100 | 2.7 mm | 2.7 mm | 1.0 eV |
+
+These are the standard uncorrected Thermo objective values and nominal source spreads — starting
+points, not a calibration of any individual column. Note the generator deliberately does **not**
+emit Parakeet's own `microscope.model` field: setting that to `krios` or `talos` makes
+`microscope.new()` overwrite the beam energy with 300 or 200 whatever the config says, silently
+discarding your `--kv`.
+
+`--help` lists everything else. The parameters it covers: `--kv`, `--detector {k3,falcon4i}`,
 `--pixel-size`, `--ice` (nm), `--aperture` (µm diameter, 0 to retract), `--slit
 {inserted,retracted}`, `--slit-width` (eV), `--filter-model
 {zero-loss,mpl,cc-corrected,none}`, `--total-dose` (e/Å²), `--dose-rate` (e/px/s), `--dqe`,
@@ -90,6 +106,8 @@ before you trust an output:
 | `--slit-width` with the default `--filter-model zero-loss` | **Nothing.** That model scales the image by `exp(−t/λ)` and never reads the width; a 10 eV and a 40 eV slit give bit-identical images. Use `--filter-model mpl` for the width to matter |
 | `--kv` other than 300 | The Landau loss distribution follows the voltage, but the **inelastic mean free path is hardcoded at 3150 Å for 300 keV**, so the elastic/inelastic split is that of a 300 keV beam |
 | `--detector` with `--dqe` | Parakeet has **one** DQE curve, measured at 300 keV, not per-detector presets. The detector choice sets array size and pixel size only — noise transfer is identical for K3 and Falcon 4i |
+| `--dose-rate` without `--dqe` | **Nothing.** The rate sets `scan.exposure_time`, and the only physics reading it is the DQE lookup; shot noise follows the dose, not the rate |
+| `--dose-rate` outside 1.5–5 e/px/s | Clamped. The DQE table has exactly two rate columns, so any realistic counting rate sits at the 5 e/px/s endpoint. There is no coincidence loss or counting saturation modelled anywhere |
 
 None of this is a defect in the generator; it is what the simulator does, established by reading
 and measuring the code. The full review is in the project's development notes as

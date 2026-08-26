@@ -52,6 +52,56 @@ DETECTORS = {
     },
 }
 
+# --- microscopes -------------------------------------------------------------
+# Voltage, Cs, Cc and source energy spread per instrument. Cs and Cc are the
+# standard uncorrected Thermo objective values; dE is the nominal source spread,
+# converted to the dE/E that Parakeet wants. These are starting points, not
+# calibrations of any individual column -- override with --kv/--cs/--cc.
+#
+# Deliberately NOT emitted as Parakeet's own `microscope.model` field: setting
+# that to "krios" or "talos" makes microscope.new() overwrite the beam energy
+# with 300 or 200 regardless of what the config says (src/parakeet/microscope.py),
+# which silently discards --kv. Explicit values avoid that.
+MICROSCOPES = {
+    "krios": {
+        "kv": 300,
+        "kv_options": [300, 200, 100],
+        "cs": 2.7,
+        "cc": 2.7,
+        "dE_eV": 0.9,
+        "description": "Thermo Titan Krios, XFEG",
+    },
+    "glacios": {
+        "kv": 200,
+        "kv_options": [200],
+        "cs": 2.7,
+        "cc": 2.7,
+        "dE_eV": 0.9,
+        "description": "Thermo Glacios, XFEG",
+    },
+    "talos": {
+        "kv": 200,
+        "kv_options": [200, 120],
+        "cs": 2.7,
+        "cc": 2.7,
+        "dE_eV": 0.9,
+        "description": "Thermo Talos (Arctica 200 kV / L120C 120 kV)",
+    },
+    "tundra": {
+        "kv": 100,
+        "kv_options": [100],
+        "cs": 2.7,
+        "cc": 2.7,
+        "dE_eV": 1.0,
+        "description": "Thermo Tundra, 100 kV",
+    },
+}
+
+# The DQE table is indexed by electrons per pixel per second over this range and
+# clamps outside it, so a dose rate beyond these is indistinguishable from the
+# endpoint (src/parakeet/dqe.py).
+DQE_EPS_RANGE = (1.5, 5.0)
+
 # Slit state -> Parakeet inelastic model.
 FILTER_MODELS = {
     "zero-loss": "zero_loss",
@@ -213,6 +263,31 @@ def build(args, warnings):
 
 def collect_model_caveats(args, warnings):
     """Where the simulation stops tracking the parameters that were asked for."""
+    scope = MICROSCOPES[args.microscope]
+    if args.kv not in scope["kv_options"]:
+        warnings.append(
+            f"--kv {args.kv:.0f} is not a voltage {args.microscope} normally offers "
+            f"({', '.join(str(v) for v in scope['kv_options'])} keV). Cs, Cc and the "
+            "source spread are still the preset's."
+        )
+
+    # Dose rate reaches exactly one thing: the DQE curve lookup.
+    if not args.dqe:
+        warnings.append(
+            f"--dose-rate {args.dose_rate} has NO EFFECT without --dqe. It sets "
+            "scan.exposure_time, and the only physics that reads it is the DQE "
+            "curve lookup; shot noise is set by the dose, not the rate."
+        )
+    else:
+        lo, hi = DQE_EPS_RANGE
+        eps = args.dose_rate
+        if eps < lo or eps > hi:
+            warnings.append(
+                f"--dose-rate {eps} e/px/s is outside the DQE table's range "
+                f"({lo}-{hi} e/px/s), so it is clamped to the nearest endpoint: any "
+                f"rate {'below ' + str(lo) if eps < lo else 'above ' + str(hi)} gives "
+                "identical output."
+            )
     if args.kv != 300:
         warnings.append(
             f"--kv {args.kv}: the inelastic mean free path is hardcoded to 3150 A "
@@ -240,10 +315,20 @@ def main():
 
     g = p.add_argument_group("beam and optics")
     g.add_argument(
-        "--kv", type=float, default=300, help="accelerating voltage, keV (default 300)"
+        "--microscope",
+        choices=sorted(MICROSCOPES),
+        default="krios",
+        help="instrument preset: sets voltage, Cs, Cc and source energy spread "
+        "(default krios). Each can still be overridden individually",
     )
-    g.add_argument("--cs", type=float, default=2.7, help="spherical aberration, mm")
-    g.add_argument("--cc", type=float, default=2.7, help="chromatic aberration, mm")
+    g.add_argument(
+        "--kv",
+        type=float,
+        default=None,
+        help="accelerating voltage, keV (default: the microscope's)",
+    )
+    g.add_argument("--cs", type=float, default=None, help="spherical aberration, mm")
+    g.add_argument("--cc", type=float, default=None, help="chromatic aberration, mm")
     g.add_argument(
         "--defocus",
         type=float,
@@ -256,8 +341,8 @@ def main():
     g.add_argument(
         "--energy-spread",
         type=float,
-        default=2.66e-6,
-        help="dE/E (default Schottky FEG)",
+        default=None,
+        help="dE/E (default: from the microscope's nominal source spread)",
     )
 
     g = p.add_argument_group("objective aperture")
@@ -367,6 +452,18 @@ def main():
     if args.aperture == 0:
         args.aperture = None
 
+    scope = MICROSCOPES[args.microscope]
+    explicit = {a.lstrip("-").replace("-", "_") for a in sys.argv if a.startswith("--")}
+    if "kv" not in explicit:
+        args.kv = scope["kv"]
+    if "cs" not in explicit:
+        args.cs = scope["cs"]
+    if "cc" not in explicit:
+        args.cc = scope["cc"]
+    if "energy_spread" not in explicit:
+        # dE/E from the nominal source spread at this voltage
+        args.energy_spread = scope["dE_eV"] / (args.kv * 1e3)
+
     warnings = []
     config, dose_per_image, t_exp, pixel_size = build(args, warnings)
     collect_model_caveats(args, warnings)
@@ -383,7 +480,8 @@ def main():
         "#",
         "#   " + " ".join(shlex.quote(a) for a in sys.argv),
         "#",
-        f"# {args.kv:.0f} keV, {DETECTORS[args.detector]['description']}",
+        f"# {MICROSCOPES[args.microscope]['description']} at {args.kv:.0f} keV",
+        f"# {DETECTORS[args.detector]['description']}",
         f"# {args.ice:.0f} nm ice, {pixel_size} A/px",
         f"# slit {args.slit}" + _slit_note(args, config),
         f"# objective aperture "
