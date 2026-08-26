@@ -9,16 +9,29 @@
 import numpy as np
 import parakeet.landau
 import scipy.signal
-from math import sqrt, pi, cos, exp, log, ceil, floor, factorial
+from math import sqrt, pi, cos, exp, log, ceil, floor, factorial, erf
 
 
 # Inelastic mean free path for amorphous ice at 300 keV. Note this does not
 # vary with beam energy, so results away from 300 keV carry that error.
 MEAN_FREE_PATH = 3150  # A
 
-# Low-loss plasmon energy for amorphous ice. Plural scattering is Poisson
-# distributed over multiples of this (Egerton, EELS in the Electron Microscope).
-ICE_PLASMON_ENERGY = 23.0  # eV
+# Low-loss plasmon of amorphous ice. Plural scattering is Poisson distributed
+# over multiples of this (Egerton, EELS in the Electron Microscope). The peak is
+# broad -- around 10 eV half width -- which matters because a slit comparable to
+# that width does not cleanly include or exclude it.
+ICE_PLASMON_ENERGY = 20.0  # eV
+ICE_PLASMON_FWHM = 20.0  # eV
+
+# Default zero-loss peak width if no source spread is given. The ZLP is not a
+# delta function: it has the width of the source, so a slit narrower than a few
+# eV starts cutting into it.
+DEFAULT_ZLP_FWHM = 0.7  # eV, a Schottky X-FEG
+
+# Used when a config selects zero-loss filtering without naming a slit width.
+# The model means the filter is inserted; retracted is inelastic_model:
+# unfiltered, not a missing width.
+DEFAULT_SLIT_WIDTH = 20.0  # eV
 
 
 def effective_thickness(shape, angle):
@@ -46,39 +59,82 @@ def effective_thickness(shape, angle):
     return abs(thickness)
 
 
-def zero_loss_fraction(shape, angle, slit_width=None, plasmon_energy=None):
+def zero_loss_fraction(shape, angle):
     """
-    Compute the fraction of electrons passed by a zero-loss energy filter.
+    Compute the fraction of electrons in the zero loss peak.
 
-    Plural inelastic scattering is Poisson distributed: the fraction of
-    electrons that have lost exactly n plasmons is
+    This is exp(-t/lambda), the n = 0 term of the Poisson plural scattering
+    series. It is a property of the specimen, not of the filter: see
+    filter_transmission for how much a given slit actually passes.
+
+    """
+    thickness = effective_thickness(shape, angle)
+    return exp(-thickness / MEAN_FREE_PATH)
+
+
+def _gaussian_fraction_in_window(centre, fwhm, low, high):
+    """Fraction of a Gaussian peak lying inside [low, high]."""
+    sigma = fwhm / (2 * sqrt(2 * log(2)))
+    if sigma <= 0:
+        return 1.0 if low <= centre <= high else 0.0
+    z_lo = (low - centre) / (sigma * sqrt(2))
+    z_hi = (high - centre) / (sigma * sqrt(2))
+    return 0.5 * (erf(z_hi) - erf(z_lo))
+
+
+def filter_transmission(
+    shape,
+    angle,
+    slit_width=None,
+    slit_centre=0.0,
+    plasmon_energy=None,
+    plasmon_fwhm=None,
+    zlp_fwhm=None,
+    n_max=10,
+):
+    """
+    Compute the fraction of electrons passed by an energy filter slit.
+
+    Note this is the fraction TRANSMITTED, which is not the same as the
+    zero-loss fraction: a retracted filter transmits everything while the
+    zero-loss fraction is still exp(-t/lambda). See zero_loss_fraction for
+    that quantity.
+
+    The low-loss spectrum is modelled as a zero-loss peak plus plasmon
+    replicas. Plural scattering is Poisson distributed, so the weight of the
+    n-th replica is
 
         P(n) = (t/lambda)^n exp(-t/lambda) / n!
 
-    at an energy loss of n * plasmon_energy. A slit centred on the zero-loss
-    peak passes P(0) plus any replica whose loss falls inside the window.
+    at an energy loss of n * plasmon_energy. Each peak has a finite width: the
+    zero-loss peak has the width of the source, and the plasmon is broad, about
+    20 eV FWHM in vitreous ice, broadening as sqrt(n) for multiple losses. The
+    transmitted fraction is the sum of each peak's weight times the part of it
+    lying inside the slit.
 
-    With no slit width this returns P(0) = exp(-t/lambda), which is the
-    narrow-slit limit and the behaviour this function has always had. A slit
-    narrower than twice the plasmon energy -- which covers the 10 to 40 eV
-    slits in normal use -- gives the same answer, so existing configs are
-    unaffected.
+    Giving finite widths matters at both ends of the range. A slit of a few eV
+    or less cuts into the zero-loss peak itself, which a delta-function model
+    would miss. And because the plasmon is 20 eV wide, a slit of comparable
+    width neither cleanly excludes nor cleanly includes it: a 20 eV slit on the
+    zero-loss peak still clips the plasmon's leading edge.
 
-    Note the losses are modelled as discrete plasmon replicas rather than by
-    integrating the Landau distribution used elsewhere in this module. Landau
-    describes energy loss in a continuous stopping medium and places its most
-    probable loss a few eV from zero, where real ice has almost no intensity;
-    integrating it over a 20 eV slit on 100 nm ice transmits 0.94 where the
-    plasmon picture gives 0.73. The Landau treatment remains the right tool for
-    the chromatic blur of the transmitted electrons, which is what it is used
-    for in the mp_loss and unfiltered paths.
+    Offsetting `slit_centre` to the plasmon energy gives plasmon imaging: the
+    zero-loss peak falls outside the slit and the image is formed from
+    inelastically scattered electrons.
 
     Args:
         shape: The sample shape
         angle: The tilt angle (degrees)
-        slit_width: The energy filter slit width (eV), or None for a slit
-            narrow enough to pass only the zero-loss peak
+        slit_width: The slit width (eV). None means no slit -- the filter is
+            retracted and everything is transmitted, returning 1.0. For a
+            filter passing only the zero-loss peak, give a width small compared
+            with the plasmon energy, which is what any real slit is.
+        slit_centre: The centre of the slit in energy loss (eV). 0 is a
+            zero-loss filter; plasmon_energy gives plasmon imaging
         plasmon_energy: The plasmon energy (eV), defaulting to amorphous ice
+        plasmon_fwhm: The plasmon width (eV), defaulting to amorphous ice
+        zlp_fwhm: The zero-loss peak FWHM (eV), i.e. the source energy spread
+        n_max: The highest plasmon order to include
 
     Returns:
         float: The fraction of electrons passed by the filter
@@ -86,14 +142,33 @@ def zero_loss_fraction(shape, angle, slit_width=None, plasmon_energy=None):
     """
     thickness = effective_thickness(shape, angle)
     t_over_lambda = thickness / MEAN_FREE_PATH
+
+    # No slit means the filter is retracted: nothing is removed.
     if slit_width is None or slit_width <= 0:
-        return exp(-t_over_lambda)
+        return 1.0
+
     if plasmon_energy is None:
         plasmon_energy = ICE_PLASMON_ENERGY
-    n_max = int((slit_width / 2.0) // plasmon_energy)
-    return sum(
-        t_over_lambda**n * exp(-t_over_lambda) / factorial(n) for n in range(n_max + 1)
-    )
+    if plasmon_fwhm is None:
+        plasmon_fwhm = ICE_PLASMON_FWHM
+    if zlp_fwhm is None:
+        zlp_fwhm = DEFAULT_ZLP_FWHM
+
+    low = slit_centre - slit_width / 2.0
+    high = slit_centre + slit_width / 2.0
+
+    total = 0.0
+    for n in range(n_max + 1):
+        weight = t_over_lambda**n * exp(-t_over_lambda) / factorial(n)
+        if n == 0:
+            width = zlp_fwhm
+        else:
+            # n independent losses convolve, so the width grows as sqrt(n)
+            width = plasmon_fwhm * sqrt(n)
+        total += weight * _gaussian_fraction_in_window(
+            n * plasmon_energy, width, low, high
+        )
+    return total
 
 
 def mp_loss_fraction(shape, angle):

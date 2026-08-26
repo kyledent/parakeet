@@ -85,7 +85,8 @@ MICROSCOPES = {
         "emitters": ["schottky", "cold"],
         "default_emitter": "schottky",
         "max_tilt": 70,
-        "description": "Thermo Titan Krios, C-TWIN objective (11 mm gap)",
+        "objective": "C-TWIN, 11 mm gap",
+        "description": "Thermo Titan Krios",
     },
     "glacios": {
         "kv": 200,
@@ -97,7 +98,8 @@ MICROSCOPES = {
         "emitters": ["schottky", "cold"],
         "default_emitter": "schottky",
         "max_tilt": 70,
-        "description": "Thermo Glacios 2, C-TWIN objective (11 mm gap)",
+        "objective": "C-TWIN, 11 mm gap",
+        "description": "Thermo Glacios 2",
     },
     "talos": {
         "kv": 200,
@@ -109,13 +111,18 @@ MICROSCOPES = {
         "emitters": ["schottky"],
         "default_emitter": "schottky",
         "max_tilt": 70,
+        "objective": "C-TWIN class",
+        "objective": "C-TWIN class",
+        "objective": "C-TWIN class",
         "description": "Thermo Talos (Arctica 200 kV / L120C 120 kV)",
     },
     "tundra": {
         "kv": 100,
         "kv_options": [100],
-        "cs": 2.7,
-        "cc": 2.7,
+        # SP-TWIN, developed for the Tundra specifically to cut spherical and
+        # chromatic aberration at 100 kV. NOT the C-TWIN's 2.7/2.7.
+        "cs": 1.6,
+        "cc": 1.7,
         # Thermo state the Tundra objective arrangement gives a 2.3 mm focal
         # length, chosen to reduce chromatic aberration at 100 kV. A physical
         # aperture therefore cuts at a HIGHER spatial frequency than the same
@@ -128,7 +135,8 @@ MICROSCOPES = {
         # +/-15 degrees only: this is a single-particle instrument, not a
         # tomography one.
         "max_tilt": 15,
-        "description": "Thermo Tundra, 100 kV, X-FEG, short-focal-length objective",
+        "objective": "SP-TWIN, 7 mm gap",
+        "description": "Thermo Tundra, 100 kV, X-FEG",
     },
 }
 
@@ -555,7 +563,9 @@ def main():
         "#",
         "#   " + " ".join(shlex.quote(a) for a in sys.argv),
         "#",
-        f"# {MICROSCOPES[args.microscope]['description']} at {args.kv:.0f} keV",
+        f"# {MICROSCOPES[args.microscope]['description']} at {args.kv:.0f} keV, "
+        f"{MICROSCOPES[args.microscope]['objective']} objective "
+        f"(Cs {args.cs} mm, Cc {args.cc} mm, f {args.objective_focal_length} mm)",
         f"# {EMITTERS[args.emitter]['description']}, "
         f"{args.energy_spread_ev} eV source spread (dE/E = {args.energy_spread:.2e})",
         f"# {DETECTORS[args.detector]['description']}",
