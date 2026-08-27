@@ -25,6 +25,7 @@ class Detector(object):
         pixel_size: float = 1,
         origin: Tuple[float, float, float] = (0, 0, 0),
         dqe: bool = True,
+        mtf: str = None,
     ):
         """
         Initialise the detector
@@ -35,6 +36,7 @@ class Detector(object):
             pixel_size: The effective size of the pixels in A
             origin: The detector origin (A, A)
             dqe: Use the detector DQE
+            mtf: The detector MTF: a preset name or a RELION MTF star file
 
         """
         self.nx = nx
@@ -42,6 +44,7 @@ class Detector(object):
         self.pixel_size = pixel_size
         self.origin = origin
         self.dqe = dqe
+        self.mtf = mtf
 
 
 def new(config: parakeet.config.Detector) -> Detector:

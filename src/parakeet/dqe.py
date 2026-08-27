@@ -119,12 +119,20 @@ class DQETable(object):
         # Compute the DQE table for a given eps
         dqe_table = self.dqe_table(energy, eps)
 
-        # Compute the spatial frequencies (in terms of nyquist)
+        # Compute the spatial frequencies as a fraction of Nyquist, which is
+        # the axis self.spatial_freq is on. The grid expression below is in
+        # cycles per pixel, where Nyquist is 0.5, so it carries a factor of two.
+        # Without it the curve is stretched over twice its range and the
+        # detector comes out roughly twice as good as its table says at the
+        # band edge.
         Y, X = np.mgrid[0 : shape[0], 0 : shape[1]]
-        F = np.sqrt(
+        F = 2.0 * np.sqrt(
             ((Y - shape[0] // 2) / shape[0]) ** 2
             + ((X - shape[1] // 2) / shape[1]) ** 2
         )
 
-        # Compute the DQE array
-        return np.interp(F.flatten(), self.spatial_freq, dqe_table).reshape(shape)
+        # Compute the DQE array. Corners of the array reach sqrt(2) times
+        # Nyquist; a sampled detector has no response there, so it is zeroed
+        # rather than left clamped to the table's endpoint.
+        dqe = np.interp(F.flatten(), self.spatial_freq, dqe_table).reshape(shape)
+        return np.where(F > 1.0, 0.0, dqe)

@@ -595,6 +595,15 @@ class Detector(BaseModel):
 
     dqe: bool = Field(False, description="Use the DQE model (True/False)")
 
+    mtf: Optional[str] = Field(
+        None,
+        description=(
+            "The detector MTF: the name of a built-in preset "
+            "(parakeet.mtf.presets_available()) or the path to a RELION MTF "
+            "star file. None for an ideal detector."
+        ),
+    )
+
     origin: Tuple[int, int] = Field(
         (0, 0), description="The origin of the detector in lab space(A,A)"
     )

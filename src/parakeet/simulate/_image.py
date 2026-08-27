@@ -17,12 +17,13 @@ import parakeet.freeze
 import parakeet.futures
 import parakeet.inelastic
 import parakeet.io
+import parakeet.mtf
 import parakeet.sample
 from parakeet.microscope import Microscope
 from parakeet.scan import Scan
 from functools import singledispatch
 from parakeet.simulate.simulation import Simulation
-from parakeet.simulate._fft_backend import fft2, ifft2, fftshift, to_numpy, from_numpy
+import parakeet.simulate._fft_backend as _fft_backend
 
 
 __all__ = ["image"]
@@ -96,23 +97,24 @@ class ImageSimulator(object):
         # Get the image
         image = self.optics.data[index]
 
-        # Apply the dqe in Fourier space
+        # Detect. What the detector does to the signal is its MTF; what it does
+        # to the signal-to-noise ratio is its DQE. They are different curves and
+        # belong in different places, so both go to parakeet.mtf.detect rather
+        # than either being multiplied onto the image here.
+        dqe = None
         if self.microscope.detector.dqe:
             logger.info("Applying DQE")
             dqe = parakeet.dqe.DQETable().dqe_fs(
                 energy, electrons_per_second, image.shape
             )
-            dqe_shifted = fftshift(from_numpy(dqe))
-            fft_image = fft2(image)
-            fft_image *= dqe_shifted
-            image = np.real(to_numpy(ifft2(fft_image)))
 
-        # Ensure all pixels are >= 0
-        image = np.clip(image, 0, None)
+        mtf = parakeet.mtf.MTF.resolve(self.microscope.detector.mtf)
+        if mtf is not None:
+            logger.info("Applying MTF: %s" % mtf)
 
-        # Add Poisson noise
-        # np.random.seed(index)
-        image = np.random.poisson(image * electrons_per_pixel).astype("float64")
+        image = parakeet.mtf.detect(
+            image, electrons_per_pixel, mtf=mtf, dqe=dqe, backend=_fft_backend
+        )
 
         # Print some info
         logger.info(
