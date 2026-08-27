@@ -1,0 +1,84 @@
+{
+  "form": "sinc(q) * (c*exp(-(q/a)^2) + (1-c)/(1+(q/b)^2))",
+  "q_units": "cycles per pixel; Nyquist = 0.5",
+  "produced_by": "validation/detector/fit_mtf.py",
+  "fits": [
+    {
+      "curve": "mtf_de20_300kV.star",
+      "a": 0.5189,
+      "b": 0.0735,
+      "c": 0.7824,
+      "rms_residual": 0.0071,
+      "max_residual": 0.0268,
+      "n_points": 641,
+      "usable": true,
+      "source": "RELION distribution data/ (vendor measurement in RELION interchange format)"
+    },
+    {
+      "curve": "mtf_falcon2_300kV.star",
+      "a": 0.3473,
+      "b": 0.0938,
+      "c": 0.2736,
+      "rms_residual": 0.0144,
+      "max_residual": 0.047,
+      "n_points": 1001,
+      "usable": true,
+      "source": "RELION distribution data/ (vendor measurement in RELION interchange format)"
+    },
+    {
+      "curve": "mtf_falcon3EC_200kV.star",
+      "a": 0.3864,
+      "b": 0.0834,
+      "c": 0.916,
+      "rms_residual": 0.0042,
+      "max_residual": 0.0163,
+      "n_points": 64,
+      "usable": true,
+      "source": "RELION distribution data/ (vendor measurement in RELION interchange format)"
+    },
+    {
+      "curve": "mtf_falcon3EC_300kV.star",
+      "a": 0.3977,
+      "b": 0.1392,
+      "c": 0.9161,
+      "rms_residual": 0.0046,
+      "max_residual": 0.0197,
+      "n_points": 64,
+      "usable": true,
+      "source": "RELION distribution data/ (vendor measurement in RELION interchange format)"
+    },
+    {
+      "curve": "mtf_falcon4EC_200kV.star",
+      "a": 0.3357,
+      "b": 0.0666,
+      "c": 0.9038,
+      "rms_residual": 0.0029,
+      "max_residual": 0.007,
+      "n_points": 64,
+      "usable": true,
+      "source": "RELION distribution data/ (vendor measurement in RELION interchange format)"
+    },
+    {
+      "curve": "mtf_falcon4EC_300kV.star",
+      "a": 0.3582,
+      "b": 0.0699,
+      "c": 0.9624,
+      "rms_residual": 0.0038,
+      "max_residual": 0.0084,
+      "n_points": 64,
+      "usable": true,
+      "source": "RELION distribution data/ (vendor measurement in RELION interchange format)"
+    },
+    {
+      "curve": "mtf_k2_300kV.star",
+      "a": 0.747,
+      "b": 0.0192,
+      "c": 0.9195,
+      "rms_residual": 0.0065,
+      "max_residual": 0.0141,
+      "n_points": 1001,
+      "usable": true,
+      "source": "RELION distribution data/ (vendor measurement in RELION interchange format)"
+    }
+  ]
+}

@@ -1,9 +1,15 @@
-# Detector MTF
+# Detector MTF and DQE
 
-Parakeet models the detector as **one DQE curve measured at 300 keV**, applied as a Fourier-space
-multiplication: `detector.dqe` is a boolean, there is no MTF at all, no per-detector selection,
-and the `energy` argument to `dqe_table` is accepted and unused. Choosing K3 or Falcon 4i changes
-the array size and the pixel size and nothing about the noise transfer.
+Upstream Parakeet models the detector as **one DQE curve measured at 300 keV**, applied as a
+Fourier-space multiplication onto the signal: `detector.dqe` is a boolean, there is no MTF at
+all, no per-detector selection, and the `energy` argument to `dqe_table` is accepted and unused.
+Choosing K3 or Falcon 4i changes the array size and the pixel size and nothing about the noise
+transfer.
+
+This fork keeps the DQE table and adds the MTF, applies each where it belongs, and fixes the
+frequency axis. What that changes, and how it was checked, is in
+[What is implemented here](#what-is-implemented-here) below. The survey that follows first is
+what the decision was based on, and is left as it was written.
 
 `mtf_survey.py` reports what real curves are available and what they say.
 
@@ -90,3 +96,112 @@ Applying one MTF at all dose rates makes the same assumption Parakeet's single D
 makes. That is probably acceptable, but it should be stated rather than inherited silently —
 particularly since Parakeet's DQE table *does* interpolate over dose rate, across a range of
 1.5 to 5 e/px/s that clamps at both ends.
+
+
+## What is implemented here
+
+Three things were wrong or missing, and all three are visible in a measurement rather than in an
+image.
+
+### 1. The DQE was read at half the frequency it should have been
+
+`parakeet.dqe.DQETable` tabulates against **fraction of Nyquist**, running 0 to 1.
+`DQETable.dqe_fs` built its grid in **cycles per pixel**, where Nyquist is 0.5, and interpolated
+one against the other. Every pixel therefore received the DQE belonging to half its frequency,
+which raises the DQE everywhere and cannot be seen by eye. At Nyquist the table says 0.322 and
+the code applied 0.628.
+
+The grid now carries the factor of two, and the response is zero beyond Nyquist, where the table
+has no data and the detector cannot respond. The corners of a square grid sit at √2 Nyquist and
+were previously being given a DQE by extrapolation.
+
+### 2. The DQE was applied where the MTF belongs
+
+The old code multiplied the noiseless image by the DQE in Fourier space and *then* drew Poisson
+noise. That attenuates the signal without touching the noise, so the delivered DQE — the thing
+the number is defined to be — comes out as **DQE²/DQE(0)** rather than DQE. A detector specified
+at 0.27 at Nyquist behaved like one at 0.09.
+
+`parakeet.mtf.detect` does the three things a detector does, in order:
+
+1. **Arrival.** Poisson at the delivered dose. This is the beam's noise, not the detector's.
+2. **Charge spreading.** Blur by the MTF. This blurs the *realised counts*, so signal and noise
+   are attenuated together and the signal-to-noise is unchanged — which is why a blur alone
+   leaves DQE = 1, and why an MTF is not a DQE.
+3. **The detector's own noise.** Whatever is left between an ideal detector and the measured
+   DQE, added with the spectrum that makes the answer come out right:
+
+       NPS_total(q) = MTF(q)² N / DQE(q)     so the added noise has power MTF²N(1/DQE − 1)
+
+Passing neither curve reduces to plain Poisson, which is what Parakeet did before either
+existed.
+
+### 3. There was no MTF
+
+`parakeet.mtf` reads RELION's two-column STAR format — the interchange format both Gatan and
+Thermo publish in — so a curve obtained from a vendor drops straight in:
+
+```yaml
+microscope:
+  detector:
+    dqe: true
+    mtf: falcon4EC_300kV          # a built-in preset
+    mtf: /path/to/mtf_k3_200kV.star   # or any RELION MTF star file
+```
+
+Seven presets carry analytic fits to the curves RELION distributes, so a config can name a
+detector without shipping a file. Each preset knows what it is and how good the fit is:
+
+| preset | a | b | c | RMS residual | worst |
+|---|---|---|---|---|---|
+| `k2_300kV` | 0.7470 | 0.0192 | 0.9195 | 0.0065 | 0.0141 |
+| `falcon2_300kV` | 0.3473 | 0.0938 | 0.2736 | 0.0144 | 0.0470 |
+| `falcon3EC_200kV` | 0.3864 | 0.0834 | 0.9160 | 0.0042 | 0.0163 |
+| `falcon3EC_300kV` | 0.3977 | 0.1392 | 0.9161 | 0.0046 | 0.0197 |
+| `falcon4EC_200kV` | 0.3357 | 0.0666 | 0.9038 | 0.0029 | 0.0070 |
+| `falcon4EC_300kV` | 0.3582 | 0.0699 | 0.9624 | 0.0038 | 0.0084 |
+| `de20_300kV` | 0.5189 | 0.0735 | 0.7824 | 0.0071 | 0.0268 |
+
+for `MTF(q) = sinc(q)·[c·exp(−(q/a)²) + (1−c)/(1+(q/b)²)]`, q in cycles per pixel. Reproduce
+with `fit_mtf.py`; the fits are in [`results/mtf_fits.json`](results/mtf_fits.json). Falcon 2 is
+the poorest fit at 0.014 RMS — it is a scintillator device and its MTF is a different shape from
+the counting detectors'.
+
+A named MTF that is neither a preset nor an existing file **raises** rather than falling back to
+none, because an ignored MTF is indistinguishable in the output from a detector that has none.
+
+### Checking it
+
+```bash
+validation/detector/delivered_dqe.py --repeats 24 --json results/delivered_dqe.json --plot dqe.png
+```
+
+The delivered DQE is measured the way a real one is, in two parts: noise power from a flat
+field, signal transfer from a white random pattern averaged over many realisations. A flat field
+alone is not enough — above DC it carries no signal, so a filter applied to the signal only is
+invisible in it, which is exactly the bug in (2).
+
+At 512², 24 fields, Falcon 4EC at 300 kV and 40 e/pixel:
+
+| model | delivered DQE |
+|---|---|
+| ideal (Poisson only) | 1.000, within 0.011 |
+| MTF only | 1.000, within 0.016 |
+| MTF + DQE | tracks the tabulated curve, worst error **0.011** |
+| legacy (DQE onto the signal) | worst error **0.200**, tracing DQE²/DQE(0) |
+
+`tests/test_mtf.py` holds the same checks as assertions, including the two that would fail if
+the curves were swapped: MTF alone must not change signal-to-noise, and MTF + DQE must reproduce
+the table.
+
+### What this does not do
+
+- **One MTF at all dose rates.** Counting is non-linear, so a measured MTF is strictly valid
+  only near the rate it was measured at. Parakeet's DQE table does interpolate over dose rate
+  (1.5–5 e/px/s, clamped at both ends); the MTF does not. Stated rather than inherited silently.
+- **No voltage interpolation.** Presets are named per voltage because interpolating between them
+  does not work: fitting Falcon 3EC at 250 kV from the 200 and 300 kV curves misplaces the
+  parameters by 2.7%, 56.4% and 1.0%, and rescaling in q leaves a residual of 0.045 against
+  0.008 for a direct fit. Name the curve you have.
+- **No K3 curve.** Still behind Gatan's request form. `falcon4EC_300kV` is the closest shipped
+  proxy and is not the same detector.
