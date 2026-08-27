@@ -192,3 +192,56 @@ def _delivered_dqe(ideal, got, mtf_grid, band, width=0.04):
     return float(
         np.mean(mtf_grid[sel] ** 2) * np.mean(nps(ideal)[sel]) / np.mean(nps(got)[sel])
     )
+
+
+class _DeviceArray(np.lib.mixins.NDArrayOperatorsMixin):
+    """
+    Stands in for a GPU array: it wraps a numpy array but refuses to combine
+    with a bare host array, which is what CuPy does. A backend that leaves a
+    kernel on the host works fine under numpy and fails only on a machine with
+    a GPU, so the contract is tested here rather than left to the hardware.
+
+    """
+
+    def __init__(self, a):
+        self.a = np.asarray(a)
+
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        converted = []
+        for x in inputs:
+            if isinstance(x, _DeviceArray):
+                converted.append(x.a)
+            elif isinstance(x, np.ndarray) and x.ndim > 0:
+                raise TypeError("host array combined with a device array")
+            else:
+                converted.append(x)
+        return _DeviceArray(getattr(ufunc, method)(*converted, **kwargs))
+
+
+class _FakeBackend:
+    fft2 = staticmethod(lambda x: _DeviceArray(np.fft.fft2(getattr(x, "a", x))))
+    ifft2 = staticmethod(lambda x: _DeviceArray(np.fft.ifft2(getattr(x, "a", x))))
+    to_numpy = staticmethod(lambda x: getattr(x, "a", x))
+    from_numpy = staticmethod(_DeviceArray)
+
+
+class TestBackend:
+    def test_kernels_reach_the_device(self):
+        rng = np.random.default_rng(4)
+        image = np.full((32, 32), 0.5)
+        dqe = parakeet.dqe.DQETable().dqe_fs(300, 10.0, (32, 32))
+        mtf = parakeet.mtf.MTF.from_preset("k2_300kV")
+        out = parakeet.mtf.detect(
+            image, 10.0, mtf=mtf, dqe=dqe, rng=rng, backend=_FakeBackend
+        )
+        assert isinstance(out, np.ndarray)
+        assert out.shape == (32, 32)
+
+    def test_numpy_and_backend_agree(self):
+        image = np.full((32, 32), 0.5)
+        mtf = parakeet.mtf.MTF.from_preset("k2_300kV")
+        a = parakeet.mtf.detect(image, 10.0, mtf=mtf, rng=np.random.default_rng(5))
+        b = parakeet.mtf.detect(
+            image, 10.0, mtf=mtf, rng=np.random.default_rng(5), backend=_FakeBackend
+        )
+        assert np.allclose(a, b)

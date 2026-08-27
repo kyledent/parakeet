@@ -330,8 +330,13 @@ def detect(image, electrons_per_pixel, mtf=None, dqe=None, rng=None, backend=Non
         rng = np.random
     if backend is None:
         fft2, ifft2, to_numpy = np.fft.fft2, np.fft.ifft2, (lambda x: x)
+        to_device = lambda x: x  # noqa: E731
     else:
         fft2, ifft2, to_numpy = backend.fft2, backend.ifft2, backend.to_numpy
+        # The kernels are built with numpy. A GPU backend returns device arrays
+        # from fft2, and multiplying one by a host array is an error rather than
+        # a silent copy, so the kernels have to be moved across explicitly.
+        to_device = getattr(backend, "from_numpy", lambda x: x)
 
     # 1. Arrival
     counts = rng.poisson(np.clip(image, 0, None) * electrons_per_pixel).astype(
@@ -344,7 +349,7 @@ def detect(image, electrons_per_pixel, mtf=None, dqe=None, rng=None, backend=Non
     m = np.fft.ifftshift(mtf.fs(shape)) if mtf is not None else np.ones(shape)
 
     # 2. Charge spreading, which blurs signal and noise alike
-    detected = np.real(to_numpy(ifft2(fft2(counts) * m)))
+    detected = np.real(to_numpy(ifft2(fft2(counts) * to_device(m))))
 
     if dqe is None:
         return detected
@@ -358,5 +363,5 @@ def detect(image, electrons_per_pixel, mtf=None, dqe=None, rng=None, backend=Non
     excess_power = np.where(m > 0, excess_power, 0.0)
 
     white = rng.normal(size=shape)
-    excess = np.real(to_numpy(ifft2(fft2(white) * np.sqrt(excess_power))))
+    excess = np.real(to_numpy(ifft2(fft2(white) * to_device(np.sqrt(excess_power)))))
     return detected + excess * np.sqrt(electrons_per_pixel)

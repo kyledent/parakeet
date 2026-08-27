@@ -34,21 +34,40 @@ import shlex
 import sys
 
 # --- detectors ---------------------------------------------------------------
-# nx, ny and a typical specimen-level pixel size. Note that the detector choice
-# affects ONLY these numbers: Parakeet has a single DQE curve, measured at
-# 300 keV, that is not selected per detector (see --dqe below).
+# nx, ny, a typical specimen-level pixel size, and the MTF curve to use at each
+# voltage. The DQE remains a single table measured at 300 keV and is not
+# selected per detector; the MTF now is (see --dqe and --mtf below).
+#
+# `mtf` maps accelerating voltage in kV to a parakeet.mtf preset name. There is
+# deliberately no interpolation between voltages and no substitution of a
+# neighbouring one: the 200 and 300 kV curves for the same detector differ by
+# more at high frequency than at low, so a curve borrowed from the wrong voltage
+# is wrong in a way that grows with resolution. A voltage with no entry gets no
+# MTF and a warning saying so.
 DETECTORS = {
     "k3": {
         "nx": 5760,
         "ny": 4092,
         "pixel_size": 1.05,
         "description": "Gatan K3, 5760 x 4092, counting mode",
+        "mtf": {},
+        "mtf_note": (
+            "Gatan publish K3 MTF curves for 200 and 300 kV in standard and CDS "
+            "mode, but behind a request form rather than as files; none is "
+            "bundled here. CDS needs its own curve -- it is a different detector "
+            "response, not a processing option."
+        ),
     },
     "falcon4i": {
         "nx": 4096,
         "ny": 4096,
         "pixel_size": 1.20,
         "description": "Thermo Falcon 4i, 4096 x 4096, EER",
+        "mtf": {200: "falcon4EC_200kV", 300: "falcon4EC_300kV"},
+        "mtf_note": (
+            "Falcon 4EC curves, used as the closest published proxy for the 4i. "
+            "Same sensor generation, not the same part."
+        ),
     },
 }
 
@@ -162,6 +181,22 @@ def electron_wavelength(kv):
     return _HC / math.sqrt(kv * (2 * _M0C2 + kv))
 
 
+def resolve_mtf(args, det):
+    """
+    Which MTF curve this config should name, if any.
+
+    An explicit --mtf wins and is passed through untouched, so a path to a curve
+    obtained from a vendor works as well as a preset name. Otherwise the
+    detector's own curve for this exact voltage is used, or none.
+
+    """
+    if args.no_mtf:
+        return None
+    if args.mtf:
+        return args.mtf
+    return det["mtf"].get(int(round(args.kv)))
+
+
 def aperture_cutoff_frequency(diameter_um, focal_length_mm, kv):
     """
     Spatial frequency (1/A) passed by an objective aperture.
@@ -189,6 +224,7 @@ def exposure_time(dose_per_image, dose_rate_e_px_s, pixel_size_A):
 
 def build(args, warnings):
     det = DETECTORS[args.detector]
+    mtf = resolve_mtf(args, det)
     pixel_size = args.pixel_size if args.pixel_size else det["pixel_size"]
     ice_A = args.ice * 10.0
     field_A = args.field if args.field else None
@@ -247,6 +283,7 @@ def build(args, warnings):
             "ny": det["ny"] if field_A is None else int(field_A / pixel_size),
             "pixel_size": pixel_size,
             "dqe": args.dqe,
+            "mtf": mtf,
         },
     }
     if args.aperture:
@@ -366,9 +403,32 @@ def collect_model_caveats(args, warnings):
             )
     if args.dqe:
         warnings.append(
-            f"--dqe with --detector {args.detector}: Parakeet has one DQE curve, "
-            "not per-detector presets. The detector choice sets the array size and "
-            "pixel size only; the noise transfer is identical for K3 and Falcon 4i."
+            f"--dqe with --detector {args.detector}: the DQE is a single table, "
+            "not a per-detector curve. The detector choice sets the array size, "
+            "the pixel size and the MTF; the DQE is the same for both."
+        )
+
+    det = DETECTORS[args.detector]
+    mtf = resolve_mtf(args, det)
+    if args.no_mtf:
+        warnings.append(
+            "--no-mtf: the detector transfers signal perfectly to Nyquist. "
+            "Real images are blurred by charge spreading; comparisons against "
+            "them will show more high-frequency signal than any detector gives."
+        )
+    elif args.mtf:
+        pass
+    elif mtf is None:
+        warnings.append(
+            f"--detector {args.detector} at {args.kv:g} kV has no MTF curve, so "
+            "none is applied and signal transfers perfectly to Nyquist. "
+            + det["mtf_note"]
+            + " Supply one with --mtf <preset|file.star>."
+        )
+    else:
+        warnings.append(
+            f"--detector {args.detector} at {args.kv:g} kV uses MTF preset "
+            f"'{mtf}'. " + det["mtf_note"]
         )
 
 
@@ -490,6 +550,18 @@ def main():
         help="dose rate, e/px/s, used to derive the exposure time (default 8)",
     )
     g.add_argument("--dqe", action="store_true", help="apply the detector DQE model")
+    g.add_argument(
+        "--mtf",
+        help=(
+            "MTF to use instead of the detector's own: a parakeet.mtf preset "
+            "name or the path to a RELION MTF star file"
+        ),
+    )
+    g.add_argument(
+        "--no-mtf",
+        action="store_true",
+        help="apply no MTF at all, giving a detector that transfers perfectly",
+    )
 
     g = p.add_argument_group("specimen")
     g.add_argument(
