@@ -72,12 +72,22 @@ DQE and no MTF; the useful target is both, per detector, per voltage.
 
 | curve | where it is |
 |---|---|
-| Gatan K3, 200 kV, standard | gatan.com K3 page, behind a request form |
-| Gatan K3, 200 kV, **CDS** | as above |
-| Gatan K3, 300 kV, standard | as above |
-| Gatan K3, 300 kV, **CDS** | as above |
+| Gatan K3, 200 kV, standard | [request form](https://go.gatan.com/l/1080093/2024-10-30/j3stnt) |
+| Gatan K3, 200 kV, **CDS** | [request form](https://go.gatan.com/l/1080093/2024-10-30/j3stn1) |
+| Gatan K3, 300 kV, standard | [request form](https://go.gatan.com/l/1080093/2024-10-30/j3stlm) |
+| Gatan K3, 300 kV, **CDS** | [request form](https://go.gatan.com/l/1080093/2024-10-30/j3stnb) |
 | Thermo Falcon 4i, any voltage | not published in STAR form; 4EC is the closest proxy |
 | Anything at 100 kV | not shipped by RELION; Gatan's Alpine is the part designed for 100–200 kV |
+
+All four are linked from the [K3 camera page](https://www.gatan.com/products/tem-imaging-spectroscopy/k3-cameras),
+one form each, and arrive by email — in the vendor's words, "**provided in a \*.star file
+format**". That is the format read here, so a received curve needs no conversion:
+
+```yaml
+microscope:
+  detector:
+    mtf: /path/to/the/received/k3_cds_200kV.star
+```
 
 **The K3 curves are the ones worth asking for.** Gatan publishes four — 200 and 300 kV, each in
 standard and CDS mode — and CDS is a different detector response rather than a processing option,

@@ -53,9 +53,10 @@ DETECTORS = {
         "mtf": {},
         "mtf_note": (
             "Gatan publish K3 MTF curves for 200 and 300 kV in standard and CDS "
-            "mode, but behind a request form rather than as files; none is "
-            "bundled here. CDS needs its own curve -- it is a different detector "
-            "response, not a processing option."
+            "mode, one request form each, linked from their K3 camera page; they "
+            "arrive by email in star format and so can be passed straight to "
+            "--mtf. None is bundled here. CDS needs its own curve -- it is a "
+            "different detector response, not a processing option."
         ),
     },
     "falcon4i": {

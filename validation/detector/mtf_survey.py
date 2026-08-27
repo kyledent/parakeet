@@ -38,11 +38,31 @@ PROVENANCE = {
     "mtf_de20_300kV": "Direct Electron DE-20, 300 kV",
 }
 
+# The four K3 curves are each behind their own form, linked from the "Modulation
+# transfer function (MTF) curves" section of
+# https://www.gatan.com/products/tem-imaging-spectroscopy/k3-cameras
+#
+# They arrive by email and, importantly, in star format -- the vendor's own words
+# are "This curve is provided in a *.star file format" -- so each one is read by
+# parakeet.mtf.MTF.from_file with no conversion. Requesting them needs a person:
+# name, organisation, country, phone. This script cannot.
 MISSING = [
-    ("Gatan K3, 200 kV, standard", "gatan.com K3 page, behind a request form"),
-    ("Gatan K3, 200 kV, CDS", "gatan.com K3 page, behind a request form"),
-    ("Gatan K3, 300 kV, standard", "gatan.com K3 page, behind a request form"),
-    ("Gatan K3, 300 kV, CDS", "gatan.com K3 page, behind a request form"),
+    (
+        "Gatan K3, 200 kV, standard",
+        "request form, arrives as star: go.gatan.com/l/1080093/2024-10-30/j3stnt",
+    ),
+    (
+        "Gatan K3, 200 kV, CDS",
+        "request form, arrives as star: go.gatan.com/l/1080093/2024-10-30/j3stn1",
+    ),
+    (
+        "Gatan K3, 300 kV, standard",
+        "request form, arrives as star: go.gatan.com/l/1080093/2024-10-30/j3stlm",
+    ),
+    (
+        "Gatan K3, 300 kV, CDS",
+        "request form, arrives as star: go.gatan.com/l/1080093/2024-10-30/j3stnb",
+    ),
     (
         "Thermo Falcon 4i, any voltage",
         "not published in STAR form; 4EC is the closest proxy",
@@ -137,8 +157,11 @@ def missing(md):
     table([[what, where] for what, where in MISSING], ["curve", "where it is"], md)
     print("  The K3 curves matter most: Gatan publishes four (200 and 300 kV, each")
     print("  in standard and CDS mode) and CDS is a different detector response, not")
-    print("  a processing option. They are behind a request form, so a person has to")
-    print("  ask for them -- this script cannot.\n")
+    print("  a processing option. Each is behind its own form, linked from")
+    print("  gatan.com/products/tem-imaging-spectroscopy/k3-cameras, and arrives by")
+    print("  email in star format -- so it drops straight into detector.mtf. The form")
+    print("  wants a name, organisation, country and phone number, so a person has to")
+    print("  ask for them; this script cannot.\n")
 
 
 def caution(md):
