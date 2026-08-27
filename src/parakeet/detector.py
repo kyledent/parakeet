@@ -26,6 +26,7 @@ class Detector(object):
         origin: Tuple[float, float, float] = (0, 0, 0),
         dqe: bool = True,
         mtf: str = None,
+        mtf_pixel_size: float = None,
     ):
         """
         Initialise the detector
@@ -37,6 +38,7 @@ class Detector(object):
             origin: The detector origin (A, A)
             dqe: Use the detector DQE
             mtf: The detector MTF: a preset name or a RELION MTF star file
+            mtf_pixel_size: The pixel size the MTF is tabulated against (A)
 
         """
         self.nx = nx
@@ -45,6 +47,7 @@ class Detector(object):
         self.origin = origin
         self.dqe = dqe
         self.mtf = mtf
+        self.mtf_pixel_size = mtf_pixel_size
 
 
 def new(config: parakeet.config.Detector) -> Detector:

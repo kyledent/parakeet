@@ -245,3 +245,76 @@ class TestBackend:
             image, 10.0, mtf=mtf, rng=np.random.default_rng(5), backend=_FakeBackend
         )
         assert np.allclose(a, b)
+
+
+class TestResample:
+    """
+    An MTF is in cycles per pixel, so the curve means nothing without the pixel
+    it was measured on. RELION keeps the two apart as --mtf_angpix and converts
+    to absolute frequency before use; these check the same conversion.
+
+    """
+
+    def test_same_pixel_is_a_no_op(self, star_file):
+        mtf = parakeet.mtf.MTF.from_file(star_file)
+        out, covered = parakeet.mtf.resample(mtf, 1.0, 1.0)
+        assert covered == pytest.approx(1.0)
+        for q in (0.0, 0.1, 0.3, 0.45):
+            assert out.at(q) == pytest.approx(mtf.at(q), abs=1e-6)
+
+    def test_axis_only_preserves_absolute_frequency(self, star_file):
+        # The same physical frequency must give the same MTF, whichever pixel
+        # the curve is expressed against.
+        mtf = parakeet.mtf.MTF.from_file(star_file)
+        out, _ = parakeet.mtf.resample(mtf, 0.5, 1.0)
+        # f is capped so that f * 1.0 stays within the new curve's Nyquist
+        for f in (0.1, 0.2, 0.4, 0.5):  # 1/A
+            assert out.at(f * 1.0) == pytest.approx(mtf.at(f * 0.5), abs=2e-3)
+
+    def test_rebin_applies_the_aperture_swap(self, star_file):
+        # Binning replaces the pixel aperture: the sinc of the old pixel comes
+        # out and the sinc of the new one goes in.
+        mtf = parakeet.mtf.MTF.from_file(star_file)
+        out, _ = parakeet.mtf.resample(mtf, 0.5, 1.0, rebin=True)
+        for q in (0.2, 0.35, 0.5):
+            expected = mtf.at(q / 2.0) * np.sinc(q) / np.sinc(q / 2.0)
+            assert out.at(q) == pytest.approx(expected, abs=2e-3)
+
+    def test_rebin_blurs_rather_than_sharpens(self, star_file):
+        mtf = parakeet.mtf.MTF.from_file(star_file)
+        axis, _ = parakeet.mtf.resample(mtf, 0.5, 1.0)
+        binned, _ = parakeet.mtf.resample(mtf, 0.5, 1.0, rebin=True)
+        assert binned.at(0.5) < axis.at(0.5)
+
+    def test_going_finer_reports_missing_coverage(self, star_file):
+        # Asking for a super-resolution curve from a physical-pixel one needs
+        # the response above the original Nyquist, which the curve does not
+        # contain. That has to be reported, not silently invented.
+        mtf = parakeet.mtf.MTF.from_file(star_file)
+        _, covered = parakeet.mtf.resample(mtf, 1.0, 0.5)
+        assert covered == pytest.approx(0.5, abs=0.02)
+
+    def test_rejects_nonsense_pixel_sizes(self, star_file):
+        mtf = parakeet.mtf.MTF.from_file(star_file)
+        with pytest.raises(ValueError):
+            parakeet.mtf.resample(mtf, 0.0, 1.0)
+        with pytest.raises(ValueError):
+            parakeet.mtf.resample(mtf, 1.0, -1.0)
+
+
+class TestStarRoundTrip:
+    def test_written_curve_reads_back(self, star_file, tmp_path):
+        mtf = parakeet.mtf.MTF.from_file(star_file)
+        out = str(tmp_path / "written.star")
+        parakeet.mtf.write_mtf_star(mtf, out)
+        back = parakeet.mtf.MTF.from_file(out)
+        for q in (0.0, 0.1, 0.25, 0.4):
+            assert back.at(q) == pytest.approx(mtf.at(q), abs=1e-6)
+
+    def test_never_writes_a_value_relion_rejects(self, tmp_path):
+        # RELION divides by the MTF and errors on anything <= 1e-10.
+        mtf = parakeet.mtf.MTF.from_params(0.2, 0.05, 1.0)
+        out = str(tmp_path / "small.star")
+        parakeet.mtf.write_mtf_star(mtf, out)
+        back = parakeet.mtf.MTF.from_file(out)
+        assert np.all(back.mtf > 1e-10)

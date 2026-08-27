@@ -253,3 +253,106 @@ the table.
   0.008 for a direct fit. Name the curve you have.
 - **No K3 curve.** Still behind Gatan's request form. `falcon4EC_300kV` is the closest shipped
   proxy and is not the same detector.
+
+
+## How RELION reads these files, and what this matches
+
+RELION is where the format comes from and where the curves are used, so its conventions decide
+what a curve means. `relion_interop.py` transcribes its lookup and checks the two agree.
+
+```bash
+validation/detector/relion_interop.py <curve.star> [...] --mtf-angpix 0.5 --angpix 1.06
+```
+
+**The axis is the physical pixel, and the pixel is supplied separately.** RELION never assumes the
+curve's pixel is the data's pixel. It converts the tabulated axis to absolute spatial frequency
+first, and only then looks it up on the map's own grid:
+
+```cpp
+mtf_resol[i] = resol_inv_pixel / mtf_angpix;      // src/postprocessing.cpp
+res          = sqrt(r2) / (angpix * XSIZE(I1()));
+```
+
+That second pixel size is `--mtf_angpix` in `relion_postprocess`, and
+`rlnMicrographOriginalPixelSize` in the optics table for refinement — RELION 3.1 onward stores the
+curve per optics group as `rlnMtfFileName` and uses it in refinement, reconstruction and particle
+subtraction, not only in post-processing. The GUI defines it as
+
+> "the original pixel size (in Angstroms) in the raw (**non-super-resolution!**) micrographs"
+
+so **a curve is tabulated against the physical detector pixel**, and super-resolution data is
+handled by the pixel-size ratio rather than by a different curve. `detector.mtf_pixel_size` is the
+same field here, and `parakeet.mtf.resample` is the same conversion.
+
+**Both ends clamp.** Past the last tabulated point RELION holds the last value; below the first it
+holds the first. `MTF.at` does the same, which is why it does not interpolate a table down to zero
+at Nyquist.
+
+**A zero is fatal.** RELION *divides* by the MTF, so a value at or below `1e-10` is a hard error
+in both code paths. `write_mtf_star` floors what it writes for that reason.
+
+### One numerical difference, measured
+
+RELION derives its index spacing by dividing the tabulated span by the **number of points** rather
+than the number of intervals:
+
+```cpp
+res_per_elem = (mtf_resol[n-1] - mtf_resol[0]) / (RFLOAT)(n);
+```
+
+Both copies of the code do it, identically. The index therefore runs ahead by one part in `n-1`,
+and the linear segment is extrapolated backwards to reach the requested frequency. The effect
+depends entirely on how densely the curve is sampled:
+
+| curve | points | worst difference | as % of MTF there |
+|---|---|---|---|
+| K2, 300 kV | 1001 | 0.00000 | 0.00% |
+| Falcon 4EC, 300 kV | 64 | 0.00840 | **8.32%** |
+| K3 standard, 200 kV | 33 | 0.01684 | 2.80% |
+
+Small in absolute terms, and largest in relative terms exactly where the MTF is smallest. It is
+worth knowing when comparing a simulation against a RELION-processed result: a 33-point curve read
+here and read by RELION differ by about 0.017 near Nyquist. Interpolating the table directly, as
+`MTF.at` does, is the more accurate of the two.
+
+**One more asymmetry:** `divideByMtf` only touches frequencies below the map's Nyquist, leaving the
+corners of the Fourier grid alone; `getMtfImage` fills the whole grid, clamping past the last
+point. Parakeet's detector response is zero beyond Nyquist, matching the first.
+
+## Bringing a curve onto a different pixel
+
+`parakeet.mtf.resample(mtf, from_angpix, to_angpix, rebin=False)` — and in the fitter, so a
+super-sampled curve can be fitted on the axis it will be used at:
+
+```bash
+validation/detector/fit_mtf.py <superres.star> --supersample 2 --rebin
+validation/detector/fit_mtf.py <curve.star> --mtf-angpix 0.5 --angpix 1.06 \
+    --write-star mtf_bin1.star
+```
+
+Two different things can be meant, and they give different answers:
+
+**The image is unchanged, only the axis convention differs.** Read the curve at the same absolute
+frequency; only the axis moves, `q_to = q_from · (to_angpix / from_angpix)`. This is what RELION's
+`--mtf_angpix` does, and it is the default.
+
+**The image really was binned.** Then the pixel aperture changed too. An MTF is the pixel aperture
+times everything else that blurs the signal, and summing k adjacent pixels gives an aperture
+exactly k times wider, so the aperture term swaps and the rest carries over at the same absolute
+frequency:
+
+```
+MTF_to(q_to) = MTF_from(q_from) · sinc(q_to) / sinc(q_from)
+```
+
+`--rebin` does that. It accounts for the blur binning causes, not the aliasing.
+
+The difference is not small. Taking the K3 CDS 300 kV curve *as if* it were a super-resolution
+curve and bringing it to bin 1: axis-only gives 0.914 at Nyquist, rebinned gives **0.646** — and
+`MTF/sinc` falls from an impossible 1.44 to 1.015. (For these particular curves the RELION
+convention above says no rebinning is called for; the example is what the flag does.)
+
+Going the other way — asking for a super-resolution curve from a physical-pixel one — needs the
+response above the original Nyquist, which the curve does not contain. The last value is held
+there and **the returned coverage says how much of the new axis was real**: 0.50 for a 2×
+super-resolution target. The fitter prints it, and the simulation warns.

@@ -604,6 +604,17 @@ class Detector(BaseModel):
         ),
     )
 
+    mtf_pixel_size: Optional[float] = Field(
+        None,
+        description=(
+            "The pixel size (A) the MTF curve is tabulated against, if it "
+            "differs from pixel_size. An MTF is in cycles per pixel, so the "
+            "curve only means something alongside the pixel it was measured "
+            "on; this is RELION's --mtf_angpix. None means the curve is "
+            "tabulated against this detector's own pixel."
+        ),
+    )
+
     origin: Tuple[int, int] = Field(
         (0, 0), description="The origin of the detector in lab space(A,A)"
     )

@@ -286,6 +286,123 @@ class MTF(object):
         return f"<MTF {kind} from {self.source}>"
 
 
+def resample(mtf, from_angpix, to_angpix, rebin=False, n=129):
+    """
+    Re-express an MTF curve for a different pixel size.
+
+    An MTF is tabulated in cycles per pixel, so the curve is only meaningful
+    alongside the pixel it was measured on. RELION keeps the two separate --
+    `--mtf_angpix` in relion_postprocess, `rlnMicrographOriginalPixelSize` in
+    the optics table -- and converts the axis to absolute spatial frequency
+    before using it. This does the same conversion, and returns a curve on the
+    target pixel's axis.
+
+    Two different things can be meant by "for a different pixel size":
+
+    **The image is unchanged and only the axis convention differs.** A curve
+    measured on the physical pixel, applied to data recorded at some other
+    sampling, is read at the same absolute frequency. This is what RELION does,
+    and it is the default here (`rebin=False`). Only the axis moves:
+
+        q_to = q_from * (to_angpix / from_angpix)
+
+    **The image really was binned.** Then the pixel aperture changed too. An
+    MTF is the pixel aperture times everything else that blurs the signal, and
+    summing k adjacent pixels gives an aperture k times wider exactly, so the
+    aperture term swaps from one sinc to the other and the rest carries over
+    unchanged at the same absolute frequency:
+
+        MTF_to(q_to) = MTF_from(q_from) * sinc(q_to) / sinc(q_from)
+
+    Pass `rebin=True` for that. Binning also aliases everything above the new
+    Nyquist back into the passband, which no MTF describes; this accounts for
+    the blur, not the aliasing.
+
+    Going to a *finer* pixel -- asking for a super-resolution curve from a
+    physical-pixel one -- needs the response above the original Nyquist, which
+    the curve does not contain. The last value is held there and the returned
+    coverage says how much of the new axis was real.
+
+    Args:
+        mtf (MTF): the curve to re-express
+        from_angpix (float): pixel size the curve is tabulated against (A)
+        to_angpix (float): pixel size to express it against (A)
+        rebin (bool): also swap the pixel aperture, for genuinely binned data
+        n (int): number of points in the returned table
+
+    Returns:
+        (MTF, float): the re-expressed curve, and the fraction of its axis that
+        came from tabulated data rather than from holding the last value
+
+    """
+    if from_angpix <= 0 or to_angpix <= 0:
+        raise ValueError("pixel sizes must be positive")
+
+    ratio = to_angpix / from_angpix
+    q_to = np.linspace(0.0, 0.5, n)
+
+    # A tabulated curve is piecewise linear, and its corners are where the
+    # information is. A uniform grid that misses them rounds them off, so the
+    # mapped original points are kept alongside it -- which also makes a
+    # same-pixel resample exact rather than nearly exact.
+    if mtf.params is None:
+        mapped = np.asarray(mtf.q) * ratio
+        q_to = np.unique(
+            np.concatenate([q_to, mapped[(mapped >= 0.0) & (mapped <= 0.5)]])
+        )
+
+    q_from = q_to / ratio
+
+    # at() zeroes beyond the curve's own Nyquist, which is right when reading a
+    # curve and wrong when re-expressing one: there the honest answer is that
+    # the curve does not say, so the last value is held and reported.
+    # Tables usually stop a little short of Nyquist and at() holds the last
+    # value over that sliver, so the curve's Nyquist is the honest edge. What
+    # coverage is for is the region beyond it, which no amount of holding can
+    # supply -- the super-resolution case.
+    q_max = 0.5 if mtf.params is not None else max(float(mtf.q[-1]), 0.5)
+    value = mtf.at(np.clip(q_from, 0.0, q_max))
+
+    # Coverage is a property of the axis, not of where the samples happen to
+    # fall: the fraction of the new [0, 0.5] that the curve actually reaches.
+    covered = min(1.0, (q_max * ratio) / 0.5)
+
+    if rebin:
+        # sinc(0)/sinc(0) is 1 and both are exactly 1 at the origin
+        with np.errstate(invalid="ignore", divide="ignore"):
+            scale = np.where(q_from > 0, np.sinc(q_to) / np.sinc(q_from), 1.0)
+        value = value * scale
+
+    out = MTF.__new__(MTF)
+    out.q = q_to
+    out.mtf = np.clip(value, 0.0, None)
+    out.params = None
+    out.residual = None
+    how = "rebinned" if rebin else "re-expressed"
+    out.source = f"{mtf.source} [{how} {from_angpix:g} -> {to_angpix:g} A/px]"
+    return out, float(covered)
+
+
+def write_mtf_star(mtf, filename, name="mtf"):
+    """
+    Write a curve in RELION's MTF star format.
+
+    Args:
+        mtf (MTF): the curve
+        filename (str): where to write it
+        name (str): the data block name
+
+    """
+    q = mtf.q if mtf.params is None else np.linspace(0, 0.5, 129)
+    v = mtf.mtf if mtf.params is None else mtf.at(q)
+    with open(filename, "w") as fh:
+        fh.write(f"data_{name}\n\nloop_\n")
+        fh.write("_rlnResolutionInversePixel #1\n_rlnMtfValue #2\n")
+        for a, b in zip(q, v):
+            # RELION errors on a value of zero or below, since it divides by it
+            fh.write("%.9f\t%.9f\n" % (a, max(float(b), 1e-6)))
+
+
 def detect(image, electrons_per_pixel, mtf=None, dqe=None, rng=None, backend=None):
     """
     Take a noiseless intensity image to detected counts.

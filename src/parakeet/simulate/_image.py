@@ -110,6 +110,21 @@ class ImageSimulator(object):
 
         mtf = parakeet.mtf.MTF.resolve(self.microscope.detector.mtf)
         if mtf is not None:
+            # An MTF is in cycles per pixel, so a curve measured on a different
+            # pixel has to be brought onto this one first. RELION keeps the two
+            # apart the same way, as --mtf_angpix.
+            mtf_pixel_size = self.microscope.detector.mtf_pixel_size
+            detector_pixel_size = self.microscope.detector.pixel_size
+            if mtf_pixel_size and mtf_pixel_size != detector_pixel_size:
+                mtf, covered = parakeet.mtf.resample(
+                    mtf, mtf_pixel_size, detector_pixel_size
+                )
+                if covered < 0.999:
+                    logger.warning(
+                        "MTF covers only %.0f%% of this detector's frequency "
+                        "range; the rest holds the last tabulated value"
+                        % (100 * covered)
+                    )
             logger.info("Applying MTF: %s" % mtf)
 
         image = parakeet.mtf.detect(
