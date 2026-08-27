@@ -108,11 +108,12 @@ def table(rows, header, md):
     print()
 
 
-def survey(data_dir, md):
+def survey(data_dir, md, extra=()):
     print("1. Curves available locally, in RELION STAR form")
     rows = []
     curves = {}
-    for path in sorted(glob.glob(os.path.join(data_dir, "mtf_*.star"))):
+    paths = sorted(glob.glob(os.path.join(data_dir, "mtf_*.star"))) + list(extra)
+    for path in paths:
         name = os.path.splitext(os.path.basename(path))[0]
         q, m = read_mtf(path)
         curves[name] = (q, m)
@@ -131,8 +132,45 @@ def survey(data_dir, md):
     return curves
 
 
+def against_the_pixel(curves, md):
+    """
+    Compare each curve to sinc(q), the MTF of a perfect square pixel.
+
+    A detector's MTF is the pixel aperture times whatever else blurs the signal,
+    so for a sensor that assigns each event to a whole pixel the ratio is at most
+    1 and falls with frequency as charge spreads. A ratio that stays near 1 means
+    the aperture is the *only* loss; a ratio above 1 means the response is
+    sharper than a box pixel, which an aperture cannot do -- it needs sub-pixel
+    event localisation, or processing applied before the curve was measured.
+
+    This is the number that says whether the compact analytic form can represent
+    a curve at all: the form is sinc times a factor that cannot exceed 1.
+
+    """
+    print("2. Against a perfect square pixel -- MTF(q) / sinc(q)")
+    rows = []
+    for name, (q, m) in sorted(curves.items()):
+        g = lambda x: np.interp(x, q, m) / np.sinc(x)
+        rows.append(
+            [
+                PROVENANCE.get(name, name),
+                f"{g(0.1):.3f}",
+                f"{g(0.25):.3f}",
+                f"{g(0.4):.3f}",
+                f"{g(0.49):.3f}",
+            ]
+        )
+    table(rows, ["detector", "q=0.1", "@0.25", "@0.4", "@0.49"], md)
+    print("  sinc(0.5) = 2/pi = 0.6366 is the whole MTF of a box pixel that does")
+    print("  nothing else. A ratio near 1 across the range means the pixel aperture")
+    print("  is the only loss -- the signature of sub-pixel event localisation. A")
+    print("  ratio above 1 cannot be produced by an aperture and a blur, so the")
+    print("  compact form in fit_mtf.py (sinc times a factor <= 1) cannot fit it;")
+    print("  use the table.\n")
+
+
 def voltage_dependence(curves, md):
-    print("2. Voltage dependence, where both voltages are available")
+    print("3. Voltage dependence, where both voltages are available")
     pairs = [
         ("Falcon 4EC", "mtf_falcon4EC_200kV", "mtf_falcon4EC_300kV"),
         ("Falcon 3EC", "mtf_falcon3EC_200kV", "mtf_falcon3EC_300kV"),
@@ -153,7 +191,7 @@ def voltage_dependence(curves, md):
 
 
 def missing(md):
-    print("3. What is not available here")
+    print("4. What is not available here")
     table([[what, where] for what, where in MISSING], ["curve", "where it is"], md)
     print("  The K3 curves matter most: Gatan publishes four (200 and 300 kV, each")
     print("  in standard and CDS mode) and CDS is a different detector response, not")
@@ -165,7 +203,7 @@ def missing(md):
 
 
 def caution(md):
-    print("4. One caution before fitting anything to these")
+    print("5. One caution before fitting anything to these")
     print("  MTF measured on a counting detector is not a simple linear response.")
     print("  The counting process is non-linear, so a measured MTF is only valid at")
     print("  the very low dose rate it was measured at, and coincidence loss changes")
@@ -183,6 +221,11 @@ def main():
         default=os.path.expanduser("~/github_repos/relion/data"),
         help="directory holding RELION's mtf_*.star files",
     )
+    ap.add_argument(
+        "extra",
+        nargs="*",
+        help="further MTF star files to include, from anywhere on disk",
+    )
     ap.add_argument("--markdown", action="store_true")
     args = ap.parse_args()
 
@@ -192,7 +235,8 @@ def main():
 
     print("Detector MTF: what is available and what it says")
     print("=" * 72 + "\n")
-    curves = survey(args.relion_data, args.markdown)
+    curves = survey(args.relion_data, args.markdown, args.extra)
+    against_the_pixel(curves, args.markdown)
     voltage_dependence(curves, args.markdown)
     missing(args.markdown)
     caution(args.markdown)

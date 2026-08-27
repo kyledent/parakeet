@@ -124,7 +124,11 @@ def main():
     parser.add_argument("--dose", type=float, default=40.0, help="Electrons/pixel")
     parser.add_argument("--repeats", type=int, default=16, help="Fields averaged")
     parser.add_argument("--energy", type=float, default=300, help="keV")
-    parser.add_argument("--detector", default="falcon4EC_300kV", help="MTF preset")
+    parser.add_argument(
+        "--detector",
+        default="falcon4EC_300kV",
+        help="MTF preset name, or the path to a RELION MTF star file",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--json", help="Write results here")
     parser.add_argument("--plot", help="Write a figure here")
@@ -133,7 +137,7 @@ def main():
     rng = np.random.default_rng(args.seed)
     table = parakeet.dqe.DQETable()
     dqe = table.dqe_fs(args.energy, args.dose, (args.size, args.size))
-    mtf = parakeet.mtf.MTF.from_preset(args.detector)
+    mtf = parakeet.mtf.MTF.resolve(args.detector)
 
     def modelled(m, d):
         return lambda im, dose, r: parakeet.mtf.detect(im, dose, mtf=m, dqe=d, rng=r)
@@ -219,7 +223,8 @@ def main():
         ax.set_xlabel("spatial frequency (fraction of Nyquist)")
         ax.set_ylabel("DQE, measured from output/input SNR$^2$")
         ax.set_title(
-            f"{args.detector}, {args.dose:g} e/pixel, worst error {worst:.3f}",
+            f"{os.path.basename(args.detector)}, {args.dose:g} e/pixel, "
+            f"worst error {worst:.3f}",
             fontsize=10,
         )
         ax.set_ylim(0, 1.25)

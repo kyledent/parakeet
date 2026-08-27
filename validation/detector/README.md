@@ -93,6 +93,45 @@ microscope:
 standard and CDS mode — and CDS is a different detector response rather than a processing option,
 so it needs its own curve. They sit behind a request form, which a person has to fill in.
 
+### What they look like when they arrive
+
+They are RELION-format tables, read directly by `MTF.from_file` with no conversion, and they are
+much better than anything RELION ships: **0.72 at Nyquist for K3 CDS at 300 kV**, against 0.37 for
+K2 and 0.09 for Falcon 4EC.
+
+They are also **not fittable by the compact form**. Section 2 of `mtf_survey.py` is the reason:
+
+| detector | MTF/sinc @0.1 | @0.25 | @0.4 | @0.49 |
+|---|---|---|---|---|
+| Thermo Falcon 4EC, 300 kV | 0.907 | 0.594 | 0.281 | 0.147 |
+| Gatan K2, 300 kV | 0.914 | 0.814 | 0.690 | 0.618 |
+| Gatan K3 standard, 300 kV | 0.987 | 0.987 | 0.984 | 0.997 |
+| Gatan K3 CDS, 300 kV | 0.999 | 1.015 | 1.067 | **1.125** |
+
+`sinc(q)` is the MTF of a perfect square pixel and is the *floor* of what a sensor can lose: a
+real detector spreads charge on top of it, so the ratio falls with frequency. Every K3 curve sits
+at that limit and CDS at 300 kV passes it — which an aperture and a blur cannot do. It is the
+signature of **sub-pixel event localisation**: the K3's counting engine always produces a
+super-resolution image internally, so an event is placed by centroid rather than assigned to a
+pixel, and the aperture stops being the floor.
+
+Since the fitted form is `sinc(q)` times a factor that cannot exceed 1, it cannot represent such a
+curve, and `fit_mtf.py` refuses three of the four (max residual 0.033, 0.035, **0.119**) rather
+than fitting anyway. **Use them as tables:**
+
+```yaml
+microscope:
+  detector:
+    mtf: /path/to/mtf_k3_CDS_300kV.star
+```
+
+**One caveat the vendor does not address:** which pixel the frequency axis refers to. The K3
+records either its internal super-resolution image or a 2× binning of it, and the request pages
+say only which mode and voltage. The assumption here is cycles per pixel of the recorded
+counting-mode image — RELION's convention, and consistent with the stated use — but it is an
+assumption, and getting it wrong misstates the high-frequency response by a factor of two in
+frequency.
+
 K3 in CDS mode at 200 keV is a common working configuration, and is exactly one of the four.
 
 ## A caution before fitting anything to these
