@@ -83,8 +83,7 @@ DQE and no MTF; the useful target is both, per detector, per voltage.
 standard and CDS mode — and CDS is a different detector response rather than a processing option,
 so it needs its own curve. They sit behind a request form, which a person has to fill in.
 
-Note the immediate relevance: the V4 session is **K3 in CDS mode at 200 keV**, which is exactly
-one of the four.
+K3 in CDS mode at 200 keV is a common working configuration, and is exactly one of the four.
 
 ## A caution before fitting anything to these
 
