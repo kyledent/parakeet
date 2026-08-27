@@ -159,6 +159,68 @@ def presets_available():
     return {k: v[5] for k, v in PRESETS.items()}
 
 
+# Where to look for curve files that are named rather than given as a path.
+# Vendor curves are not distributed with this code -- they are the vendors'
+# measurements, and some arrive only by request -- so a detector profile names
+# the curve it needs and the file is found on the machine that has it.
+MTF_PATH_VAR = "PARAKEET_MTF_PATH"
+DEFAULT_MTF_DIR = os.path.join(os.path.expanduser("~"), ".parakeet", "mtf")
+
+
+def curve_search_path():
+    """Directories searched for named curve files, in order."""
+    dirs = []
+    for d in os.environ.get(MTF_PATH_VAR, "").split(os.pathsep):
+        if d.strip():
+            dirs.append(os.path.expanduser(d.strip()))
+    dirs.append(DEFAULT_MTF_DIR)
+    return dirs
+
+
+def find_curve(spec, dirs=None):
+    """
+    Find a curve file from a description of it.
+
+    Vendors decorate their filenames -- the K3 curves arrive with an `_FL1` or
+    `_FL2` suffix that is not explained anywhere and differs between them -- so
+    a profile cannot name an exact filename and be right. It names the tokens
+    that identify the curve instead, and any star file whose name contains all
+    of them matches.
+
+    Ambiguity is an error rather than a first match, because silently picking
+    one of two curves for a detector is the kind of thing that is never noticed.
+
+    Args:
+        spec (str): whitespace- or plus-separated tokens, e.g. "k3 cds 300kV"
+        dirs (list): directories to search, or None for the search path
+
+    Returns:
+        str: the path, or None if nothing matched
+
+    """
+    tokens = [x.lower() for x in spec.replace("+", " ").split() if x]
+    if not tokens:
+        return None
+    hits = []
+    for d in curve_search_path() if dirs is None else dirs:
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            if not name.lower().endswith(".star"):
+                continue
+            low = name.lower()
+            if all(tok in low for tok in tokens):
+                hits.append(os.path.join(d, name))
+    if not hits:
+        return None
+    if len(set(map(os.path.basename, hits))) > 1:
+        raise ValueError(
+            "MTF %r matches more than one curve: %s. Name it more precisely, "
+            "or give the path." % (spec, ", ".join(os.path.basename(h) for h in hits))
+        )
+    return hits[0]
+
+
 class MTF(object):
     """
     A detector MTF, from a table or a fitted form.
@@ -243,9 +305,19 @@ class MTF(object):
             return cls.from_preset(spec)
         if os.path.exists(spec):
             return cls.from_file(spec)
+        found = find_curve(spec)
+        if found:
+            return cls.from_file(found)
         raise ValueError(
-            "MTF %s is neither a known preset (%s) nor an existing file"
-            % (spec, ", ".join(sorted(PRESETS)))
+            "MTF %r is not a known preset (%s), not an existing file, and "
+            "matches no curve on the search path (%s). Set %s to a directory "
+            "holding the star file, or give its path."
+            % (
+                spec,
+                ", ".join(sorted(PRESETS)),
+                os.pathsep.join(curve_search_path()),
+                MTF_PATH_VAR,
+            )
         )
 
     def at(self, q):

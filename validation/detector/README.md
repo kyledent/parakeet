@@ -356,3 +356,40 @@ Going the other way — asking for a super-resolution curve from a physical-pixe
 response above the original Nyquist, which the curve does not contain. The last value is held
 there and **the returned coverage says how much of the new axis was real**: 0.50 for a 2×
 super-resolution target. The fitter prints it, and the simulation warns.
+
+
+## Naming a curve a profile cannot ship
+
+Vendor curves are the vendors' measurements and some arrive only by request, so they are **not
+distributed with this code**. A detector profile therefore names the curve it needs, and the file
+is found on the machine that has it:
+
+```bash
+export PARAKEET_MTF_PATH=/path/to/your/curves        # or put them in ~/.parakeet/mtf
+benchmark/make_config.py --detector k3 --readout cds --kv 300 --dqe -o config.yaml
+```
+
+which emits `mtf: k3 CDS 300kV` and reports what that resolved to:
+
+```
+warning: --detector k3 (cds) at 300 kV uses MTF 'k3 CDS 300kV'
+         -> /home/.../mtf_k3_CDS_300kV_FL1.star
+```
+
+`MTF.resolve` tries, in order: a built-in preset, an existing path, then the search path. Matching
+on the search path is by **tokens contained in the filename**, because a profile cannot name an
+exact filename and be right — the K3 curves arrive with an `_FL1` or `_FL2` suffix that is not
+explained anywhere and differs between them. **Two matches is an error, not a first match:**
+silently picking one of two curves for a detector is the kind of thing that is never noticed.
+
+If the curve is absent the config still names it, and the generator says so plainly rather than
+quietly falling back to no MTF:
+
+```
+warning: --detector k3 (cds) at 300 kV wants MTF 'k3 CDS 300kV', which was NOT FOUND,
+         so the config names it and the simulation will fail until it is available.
+```
+
+**CDS is its own readout mode, not a processing option**, so it carries its own curve —
+`--readout {standard,cds}` for the K3, and the mode appears in every message so a config cannot be
+mistaken for the other one.

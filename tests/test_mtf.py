@@ -318,3 +318,55 @@ class TestStarRoundTrip:
         parakeet.mtf.write_mtf_star(mtf, out)
         back = parakeet.mtf.MTF.from_file(out)
         assert np.all(back.mtf > 1e-10)
+
+
+class TestCurveLibrary:
+    """
+    Vendor curves are not distributed with this code, so a detector profile
+    names the curve it needs and the file is found on the machine that has it.
+
+    """
+
+    @pytest.fixture
+    def library(self, tmp_path, monkeypatch):
+        for name in (
+            "mtf_k3_CDS_300kV_FL1.star",
+            "mtf_k3_standard_300kV_FL2.star",
+            "notes.txt",
+        ):
+            (tmp_path / name).write_text(STAR)
+        monkeypatch.setenv(parakeet.mtf.MTF_PATH_VAR, str(tmp_path))
+        return tmp_path
+
+    def test_finds_by_tokens_despite_vendor_suffixes(self, library):
+        # The K3 curves arrive with an _FL1 or _FL2 suffix that is not
+        # explained and differs between them, so an exact filename cannot be
+        # named in advance.
+        found = parakeet.mtf.find_curve("k3 CDS 300kV")
+        assert found is not None
+        assert found.endswith("mtf_k3_CDS_300kV_FL1.star")
+
+    def test_matching_is_case_insensitive(self, library):
+        assert parakeet.mtf.find_curve("K3 cds 300KV") is not None
+
+    def test_ambiguity_is_an_error(self, library):
+        # Silently picking one of two curves for a detector is exactly the kind
+        # of thing that is never noticed.
+        with pytest.raises(ValueError):
+            parakeet.mtf.find_curve("k3 300kV")
+
+    def test_ignores_non_star_files(self, library):
+        assert parakeet.mtf.find_curve("notes") is None
+
+    def test_resolve_falls_through_to_the_library(self, library):
+        mtf = parakeet.mtf.MTF.resolve("k3 standard 300kV")
+        assert mtf.params is None
+        assert mtf.at(0.0) == pytest.approx(1.0)
+
+    def test_preset_still_wins_over_the_library(self, library):
+        mtf = parakeet.mtf.MTF.resolve("k2_300kV")
+        assert mtf.params is not None
+
+    def test_missing_curve_names_where_it_looked(self, library):
+        with pytest.raises(ValueError, match=parakeet.mtf.MTF_PATH_VAR):
+            parakeet.mtf.MTF.resolve("no such detector 999kV")

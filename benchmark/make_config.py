@@ -30,8 +30,15 @@ Examples:
 import argparse
 import datetime
 import math
+import os
 import shlex
 import sys
+
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
+)
+
+import parakeet.mtf  # noqa: E402
 
 # --- detectors ---------------------------------------------------------------
 # nx, ny, a typical specimen-level pixel size, and the MTF curve to use at each
@@ -50,13 +57,15 @@ DETECTORS = {
         "ny": 4092,
         "pixel_size": 1.05,
         "description": "Gatan K3, 5760 x 4092, counting mode",
-        "mtf": {},
+        "modes": {
+            "standard": {200: "k3 standard 200kV", 300: "k3 standard 300kV"},
+            "cds": {200: "k3 CDS 200kV", 300: "k3 CDS 300kV"},
+        },
+        "default_mode": "standard",
         "mtf_note": (
-            "Gatan publish K3 MTF curves for 200 and 300 kV in standard and CDS "
-            "mode, one request form each, linked from their K3 camera page; they "
-            "arrive by email in star format and so can be passed straight to "
-            "--mtf. None is bundled here. CDS needs its own curve -- it is a "
-            "different detector response, not a processing option."
+            "Gatan's own measurements, one request form each from their K3 "
+            "camera page. They are not distributed with this code, so the "
+            "profile names the curve and it is found on the search path."
         ),
     },
     "falcon4i": {
@@ -64,13 +73,19 @@ DETECTORS = {
         "ny": 4096,
         "pixel_size": 1.20,
         "description": "Thermo Falcon 4i, 4096 x 4096, EER",
-        "mtf": {200: "falcon4EC_200kV", 300: "falcon4EC_300kV"},
+        "modes": {
+            "counting": {200: "falcon4EC_200kV", 300: "falcon4EC_300kV"},
+        },
+        "default_mode": "counting",
         "mtf_note": (
             "Falcon 4EC curves, used as the closest published proxy for the 4i. "
             "Same sensor generation, not the same part."
         ),
     },
 }
+
+# Every readout mode any detector offers, for --readout
+READOUT_MODES = sorted({m for d in DETECTORS.values() for m in d["modes"]})
 
 # --- microscopes -------------------------------------------------------------
 # Voltage, Cs, Cc and source energy spread per instrument. Cs and Cc are the
@@ -195,7 +210,13 @@ def resolve_mtf(args, det):
         return None
     if args.mtf:
         return args.mtf
-    return det["mtf"].get(int(round(args.kv)))
+    mode = args.readout or det["default_mode"]
+    if mode not in det["modes"]:
+        raise SystemExit(
+            f"--detector {args.detector} has no readout mode {mode!r}; "
+            f"it offers {', '.join(sorted(det['modes']))}"
+        )
+    return det["modes"][mode].get(int(round(args.kv)))
 
 
 def aperture_cutoff_frequency(diameter_um, focal_length_mm, kv):
@@ -427,10 +448,22 @@ def collect_model_caveats(args, warnings):
             + " Supply one with --mtf <preset|file.star>."
         )
     else:
-        warnings.append(
-            f"--detector {args.detector} at {args.kv:g} kV uses MTF preset "
-            f"'{mtf}'. " + det["mtf_note"]
-        )
+        mode = args.readout or det["default_mode"]
+        try:
+            found = parakeet.mtf.MTF.resolve(mtf)
+            where = getattr(found, "source", mtf)
+            warnings.append(
+                f"--detector {args.detector} ({mode}) at {args.kv:g} kV uses "
+                f"MTF '{mtf}' -> {where}. " + det["mtf_note"]
+            )
+        except ValueError as e:
+            warnings.append(
+                f"--detector {args.detector} ({mode}) at {args.kv:g} kV wants "
+                f"MTF '{mtf}', which was NOT FOUND, so the config names it and "
+                f"the simulation will fail until it is available. "
+                + det["mtf_note"]
+                + f" ({e})"
+            )
 
 
 def main():
@@ -526,6 +559,13 @@ def main():
 
     g = p.add_argument_group("detector and dose")
     g.add_argument("--detector", choices=sorted(DETECTORS), default="k3")
+    g.add_argument(
+        "--readout",
+        choices=READOUT_MODES,
+        default=None,
+        help="detector readout mode; CDS is a different detector response "
+        "rather than a processing option, so it has its own MTF curve",
+    )
     g.add_argument(
         "--pixel-size",
         type=float,
