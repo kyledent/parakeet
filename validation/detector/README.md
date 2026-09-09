@@ -306,8 +306,8 @@ depends entirely on how densely the curve is sampled:
 
 | curve | points | worst difference | as % of MTF there |
 |---|---|---|---|
-| K2, 300 kV | 1001 | 0.00000 | 0.00% |
-| Falcon 4EC, 300 kV | 64 | 0.00840 | **8.32%** |
+| K2, 300 kV | 1001 | 0.00032 | 0.08% |
+| Falcon 4EC, 300 kV | 64 | 0.00930 | **9.13%** |
 | K3 standard, 200 kV | 33 | 0.01684 | 2.80% |
 
 Small in absolute terms, and largest in relative terms exactly where the MTF is smallest. It is

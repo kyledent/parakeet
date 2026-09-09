@@ -108,7 +108,11 @@ def main():
     worst_overall = 0.0
     for path in args.curves:
         m = parakeet.mtf.MTF.from_file(path)
-        q = np.linspace(0.0, m.q[-1], 501)
+        # The worst case is a supremum over a continuum, so a coarser probe
+        # simply finds less of it. 2001 points matches
+        # relion/mtf_index_bug/reproduce_mtf_index.py so the two agree; an
+        # earlier 501-point probe under-reported Falcon 4EC as 0.0084 / 8.3%.
+        q = np.linspace(0.0, m.q[-1], 2001)
         got = relion_lookup(q, m.q, m.mtf)
         ref = relion_lookup(q, m.q, m.mtf, per_elem_divisor=len(m.q) - 1)
         d = np.abs(got - ref)
