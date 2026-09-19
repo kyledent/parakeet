@@ -1,0 +1,84 @@
+# Continuous integration for this fork's community-maintenance branch.
+#
+# This replaces upstream's workflows on this branch. Five of upstream's seven publish or
+# deploy (container registries, PyPI, conda, snap, GitHub Pages), and on a fork the container
+# one succeeds with no secret at all, publishing under the fork owner's name. Nothing here
+# publishes anything.
+#
+# The linters are pinned because upstream's test workflow is not: it installs whatever black
+# is newest, the 2026 style would reformat about half the tree, and so every job has stopped
+# at `black --check` since late 2025 without pytest ever running.
+name: CI
+
+on:
+  push:
+    branches: [community-maintenance]
+  pull_request:
+    branches: [community-maintenance]
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install pinned linters
+        run: python -m pip install "black==24.4.2" "flake8==7.3.0"
+      - name: black
+        run: black --check src tests
+      - name: flake8 (errors that stop code running)
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+  test:
+    name: Tests (Python ${{ matrix.python }}, no GPU)
+    needs: lint
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    env:
+      # There is no GPU on the runner. MULTEM still has to be compiled with nvcc, and it
+      # links the CUDA driver library, so both the toolkit and the userspace driver are
+      # installed: the cuda-12-8 metapackage brings both, where a devel container would
+      # bring only a link stub and `import multem` would fail. The tests then run on
+      # MULTEM's CPU path, and on numpy rather than CuPy.
+      PARAKEET_NO_CUPY: "1"
+      CUDA_PKG: "12-8"
+      CUDA_DIR: "/usr/local/cuda-12.8"
+    steps:
+      - name: Install CUDA and FFTW
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get -y install "cuda-${CUDA_PKG}" libfftw3-dev
+          echo "${CUDA_DIR}/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        env:
+          CUDACXX: ${{ env.CUDA_DIR }}/bin/nvcc
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-cov
+          python -m pip install -e .
+      - name: pytest
+        run: pytest
