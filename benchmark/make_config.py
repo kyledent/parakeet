@@ -41,51 +41,11 @@ sys.path.insert(
 import parakeet.mtf  # noqa: E402
 
 # --- detectors ---------------------------------------------------------------
-# nx, ny, a typical specimen-level pixel size, and the MTF curve to use at each
-# voltage. The DQE remains a single table measured at 300 keV and is not
-# selected per detector; the MTF now is (see --dqe and --mtf below).
-#
-# `mtf` maps accelerating voltage in kV to a parakeet.mtf preset name. There is
-# deliberately no interpolation between voltages and no substitution of a
-# neighbouring one: the 200 and 300 kV curves for the same detector differ by
-# more at high frequency than at low, so a curve borrowed from the wrong voltage
-# is wrong in a way that grows with resolution. A voltage with no entry gets no
-# MTF and a warning saying so.
-DETECTORS = {
-    "k3": {
-        "nx": 5760,
-        "ny": 4092,
-        "pixel_size": 1.05,
-        "description": "Gatan K3, 5760 x 4092, counting mode",
-        "modes": {
-            "standard": {200: "k3 standard 200kV", 300: "k3 standard 300kV"},
-            "cds": {200: "k3 CDS 200kV", 300: "k3 CDS 300kV"},
-        },
-        "default_mode": "standard",
-        "mtf_note": (
-            "Gatan's own measurements, one request form each from their K3 "
-            "camera page. They are not distributed with this code, so the "
-            "profile names the curve and it is found on the search path."
-        ),
-    },
-    "falcon4i": {
-        "nx": 4096,
-        "ny": 4096,
-        "pixel_size": 1.20,
-        "description": "Thermo Falcon 4i, 4096 x 4096, EER",
-        "modes": {
-            "counting": {200: "falcon4EC_200kV", 300: "falcon4EC_300kV"},
-        },
-        "default_mode": "counting",
-        "mtf_note": (
-            "Falcon 4EC curves, used as the closest published proxy for the 4i. "
-            "Same sensor generation, not the same part."
-        ),
-    },
-}
-
-# Every readout mode any detector offers, for --readout
-READOUT_MODES = sorted({m for d in DETECTORS.values() for m in d["modes"]})
+# The profiles (size, typical pixel size, readout modes and the MTF curve per
+# voltage, with no substitution between voltages) live in the installed package,
+# parakeet.detector_profiles, so that anything can switch detectors by name.
+from parakeet.detector_profiles import DETECTORS, READOUT_MODES  # noqa: E402
+import parakeet.detector_profiles  # noqa: E402
 
 # --- microscopes -------------------------------------------------------------
 # Voltage, Cs, Cc and source energy spread per instrument. Cs and Cc are the
@@ -210,13 +170,10 @@ def resolve_mtf(args, det):
         return None
     if args.mtf:
         return args.mtf
-    mode = args.readout or det["default_mode"]
-    if mode not in det["modes"]:
-        raise SystemExit(
-            f"--detector {args.detector} has no readout mode {mode!r}; "
-            f"it offers {', '.join(sorted(det['modes']))}"
-        )
-    return det["modes"][mode].get(int(round(args.kv)))
+    try:
+        return parakeet.detector_profiles.mtf_for(args.detector, args.kv, args.readout)
+    except ValueError as e:
+        raise SystemExit(str(e))
 
 
 def aperture_cutoff_frequency(diameter_um, focal_length_mm, kv):
