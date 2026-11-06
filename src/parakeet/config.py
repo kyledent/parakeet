@@ -854,6 +854,15 @@ class Simulation(BaseModel):
         IceParameters(), description="The parameters for the GRF ice model"
     )
 
+    allow_uncalibrated_sampling: bool = Field(
+        False,
+        description=(
+            "Run the GRF ice model at a pixel area above 4 A^2 with the "
+            "band-limited potential off, where its corrections clamp (warns "
+            "instead of raising)"
+        ),
+    )
+
     radiation_damage_model: bool = Field(
         False, description="Use the radiation damage model (True/False)"
     )

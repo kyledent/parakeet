@@ -75,6 +75,69 @@ def ice_centre(sample_centre, offset, origin, shift):
     )
 
 
+# The GRF ice model's pixel-area corrections are tabulated for pixel areas up
+# to this (A^2). Without the band-limited potential they are used, and beyond
+# the table they clamp to its last value with no warning.
+MAX_CALIBRATED_ICE_PIXEL_AREA = 4.0
+
+
+def check_ice_sampling(pixel_size, band_limited, allow_uncalibrated=False):
+    """
+    Refuse GRF ice at a pixel size its calibration does not cover
+
+    With the band-limited potential on, the ice's mean and variance come from
+    the band-limited atoms and its own spectrum at any pixel size, and nothing
+    is refused. With it off, they come from correction tables that end at
+    MAX_CALIBRATED_ICE_PIXEL_AREA and clamp beyond it, so a coarser pixel
+    silently gets the mean and variance of a finer one.
+
+    Args:
+        pixel_size: The pixel size (A)
+        band_limited: Whether the engine band-limits atomic potentials
+        allow_uncalibrated: Warn instead of raising
+
+    Raises:
+        ValueError: The pixel is too coarse for the tables, the band-limited
+            potential is off, and allow_uncalibrated is False
+
+    """
+    area = pixel_size**2
+    if band_limited or area <= MAX_CALIBRATED_ICE_PIXEL_AREA:
+        return
+    message = (
+        "GRF ice at %g A/px (pixel area %g A^2): with the band-limited potential "
+        "off, the ice model's corrections are tabulated only to %g A^2 and clamp "
+        "beyond it, so the ice would get the mean and variance of a %g A/px "
+        "pixel. Turn the band-limited potential on (MULTEM_BANDLIMITED_POTENTIAL=1, "
+        "the default) or set simulation.allow_uncalibrated_sampling."
+        % (
+            pixel_size,
+            area,
+            MAX_CALIBRATED_ICE_PIXEL_AREA,
+            sqrt(MAX_CALIBRATED_ICE_PIXEL_AREA),
+        )
+    )
+    if not allow_uncalibrated:
+        raise ValueError(message)
+    logger.warning(message)
+
+
+def engine_band_limited():
+    """
+    Whether the loaded engine band-limits atomic potentials
+
+    An engine without the switch predates the band-limited potential. The
+    switch is in python-multem's Python layer and reads an environment
+    variable: it cannot tell whether the compiled extension behind it has the
+    band-limited tables, so a new Python layer over a stale extension reads as
+    on. tools/check_engine.py, which compares the commit the engine was built
+    from with the pin, is the check for that.
+
+    """
+    function = getattr(multem, "band_limited_potential", None)
+    return bool(function()) if function is not None else False
+
+
 class SimulationEngine(object):
     """
     A class to encapsulate the multem stuff
@@ -519,6 +582,13 @@ class SimulationEngine(object):
         Get the masker object for the ice specification
 
         """
+
+        # Refuse a pixel the ice calibration does not cover
+        check_ice_sampling(
+            pixel_size,
+            engine_band_limited(),
+            simulation.get("allow_uncalibrated_sampling", False),
+        )
 
         # Create the masker
         masker = multem.Masker(self.input.nx, self.input.ny, pixel_size)
