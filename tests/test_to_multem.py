@@ -9,7 +9,9 @@ import pytest
 
 multem = pytest.importorskip("multem")
 if not hasattr(multem.AtomList, "from_arrays"):
-    pytest.skip("this python-multem has no AtomList.from_arrays", allow_module_level=True)
+    pytest.skip(
+        "this python-multem has no AtomList.from_arrays", allow_module_level=True
+    )
 
 from parakeet.sample import AtomData  # noqa: E402
 
