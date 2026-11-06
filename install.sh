@@ -80,7 +80,11 @@ pip install cmake ninja wheel numpy setuptools-scm
 echo ""
 echo "=== Building python-multem (CUDA multislice engine) ==="
 echo "    This compiles CUDA kernels -- may take a few minutes..."
-pip install python-multem --no-build-isolation
+# python-multem as pinned in setup.py (PYTHON_MULTEM_COMMIT), so the scripts and the package agree
+PYTHON_MULTEM_PIN="python-multem @ git+https://github.com/kyledent/python-multem.git@$(
+    sed -n 's/^PYTHON_MULTEM_COMMIT = "\([0-9a-f]\{40\}\)"$/\1/p' "$(dirname "${BASH_SOURCE[0]}")/setup.py")"
+echo "    ${PYTHON_MULTEM_PIN}"
+pip install "${PYTHON_MULTEM_PIN}" --no-build-isolation
 
 echo ""
 echo "=== Building guanaco (CUDA reconstruction library) ==="

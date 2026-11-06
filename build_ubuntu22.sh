@@ -109,7 +109,11 @@ else
     echo ""
     echo "=== Building python-multem (CUDA multislice, sm_${CUDA_ARCH}) ==="
     echo "    This compiles CUDA kernels -- takes 3-5 minutes..."
-    pip install python-multem --no-build-isolation -v 2>&1 | tail -10
+    # python-multem as pinned in setup.py (PYTHON_MULTEM_COMMIT), so the scripts and the package agree
+    PYTHON_MULTEM_PIN="python-multem @ git+https://github.com/kyledent/python-multem.git@$(
+        sed -n 's/^PYTHON_MULTEM_COMMIT = "\([0-9a-f]\{40\}\)"$/\1/p' "$(dirname "${BASH_SOURCE[0]}")/setup.py")"
+    echo "    ${PYTHON_MULTEM_PIN}"
+    pip install "${PYTHON_MULTEM_PIN}" --no-build-isolation -v 2>&1 | tail -10
 
     echo ""
     echo "=== Building guanaco (CUDA reconstruction) ==="
