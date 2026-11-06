@@ -524,17 +524,17 @@ class AtomData(object):
         """
         if len(self.data) == 0:
             return multem.AtomList()
-        return multem.AtomList(
-            zip(
-                self.data["atomic_number"].astype("uint8"),
-                self.data["x"].astype("float32"),
-                self.data["y"].astype("float32"),
-                self.data["z"].astype("float32"),
-                self.data["sigma"].astype("float32"),
-                self.data["occupancy"].astype("float32"),
-                [int(0) for i in range(self.data.shape[0])],
-                self.data["charge"].astype("int8"),
-            )
+        # Columns go to the engine as arrays, not one Python tuple per atom. The
+        # float32 casts keep the values the zip-based construction passed.
+        return multem.AtomList.from_arrays(
+            self.data["atomic_number"].to_numpy(dtype="int32"),
+            self.data["x"].to_numpy(dtype="float32"),
+            self.data["y"].to_numpy(dtype="float32"),
+            self.data["z"].to_numpy(dtype="float32"),
+            self.data["sigma"].to_numpy(dtype="float32"),
+            self.data["occupancy"].to_numpy(dtype="float32"),
+            np.zeros(self.data.shape[0], dtype="int32"),
+            self.data["charge"].to_numpy(dtype="int32"),
         )
 
     def rows(self):
