@@ -45,6 +45,36 @@ def defocus_spread(Cc, dEE, dII, dVV):
     return Cc * sqrt((dEE) ** 2 + (2 * dII) ** 2 + (dVV) ** 2)
 
 
+def ice_centre(sample_centre, offset, origin, shift):
+    """
+    The centre of the sample's ice in the simulation's frame.
+
+    The simulators put each atom at its position, less the shift, plus
+    (offset - origin_x, offset - origin_y, 0): the margin and padding widen the
+    simulated area laterally and never move anything in z. The ice must move
+    the same way. Adding the scalar offset to all three axes, as this did
+    before, put the ice slab offset Angstroms out of register with the atoms in
+    z: (margin + padding) * pixel_size, 300 A with the default 100 + 100 pixels
+    at 1.5 A/px.
+
+    Args:
+        sample_centre: The sample centre (x, y, z), A
+        offset: The lateral offset of the simulated area, A
+        origin: The detector origin (x, y), A
+        shift: The shift subtracted from the atom positions (x, y, z), A
+
+    Returns:
+        The centre (x, y, z) at which to place the ice
+
+    """
+    return (
+        np.asarray(sample_centre, dtype=float)
+        + np.array([offset, offset, 0.0])
+        - np.array([origin[0], origin[1], 0.0])
+        - np.asarray(shift, dtype=float)
+    )
+
+
 class SimulationEngine(object):
     """
     A class to encapsulate the multem stuff
@@ -506,9 +536,7 @@ class SimulationEngine(object):
 
         # Get the sample centre
         shape = sample.shape
-        centre = np.array(sample.centre)
-        detector_origin = np.array([origin[0], origin[1], 0])
-        centre = centre + offset - detector_origin - shift
+        centre = ice_centre(sample.centre, offset, origin, shift)
 
         # Set the shape
         if shape["type"] == "cube":
