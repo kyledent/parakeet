@@ -16,6 +16,7 @@ output that flows into downstream tomography processing without hand-built metad
 | Band-limited atomic potentials | shipped (in the engine) | MULTEM's per-atom tables lost most of each atom's projected potential at cryo-EM pixel sizes (oxygen keeps ~15% at 1.5 A/px), in a share that depends on the element. The pinned engine band-limits each atom's potential to the grid, so it is deposited in full at any pixel size, and the GRF ice follows. On by default; `MULTEM_BANDLIMITED_POTENTIAL=0` restores the old behaviour. See the python-multem README |
 | GRF ice on the GPU | shipped (in the engine) | The engine's pipelined GPU slice loop skipped the external potential, so a GPU exit wave carried no GRF ice and no static B factor; the CPU path and the projected potential were unaffected. The pinned engine sends those cases through the original loop |
 | Atom lists from arrays | shipped | `AtomData.to_multem` hands the atom columns to the engine as arrays (`AtomList.from_arrays`) instead of building one Python tuple per atom |
+| Seedable ice | shipped (in the engine) | The engine's maskers take a random-field seed (`Masker.set_seed`, `MultiRegionMasker.set_seed`): with one, the same field and slicing give the same ice; the default stays a fresh field per simulation |
 | [Support film](fork/support_film.md) | **not wired up** | Model and config exist; nothing reads them yet |
 | Variable per-tilt dose | not started | Native per-tilt dose in tilt-series mode |
 
