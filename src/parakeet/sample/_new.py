@@ -20,6 +20,7 @@ from math import pi, floor
 from scipy.spatial.transform import Rotation
 from functools import singledispatch
 from parakeet.sample import recentre
+from parakeet.sample import shape_contains
 from parakeet.sample import Sample
 from parakeet.sample import AtomData
 from parakeet.sample import random_uniform_rotation
@@ -47,41 +48,7 @@ def add_ice(sample, centre=None, shape=None, density=940.0, pack=False):
     """
 
     def shape_filter_coordinates(coords, centre, shape):
-        def cube_filter_coordinates(coords, centre, cube):
-            length = cube["length"]
-            x0 = centre - length / 2.0
-            x1 = centre + length / 2.0
-            return coords[((coords >= x0) & (coords < x1)).all(axis=1)]
-
-        def cuboid_filter_coordinates(coords, centre, cuboid):
-            length_x = cuboid["length_x"]
-            length_y = cuboid["length_y"]
-            length_z = cuboid["length_z"]
-            length = np.array((length_x, length_y, length_z))
-            x0 = centre - length / 2.0
-            x1 = centre + length / 2.0
-            return coords[((coords >= x0) & (coords < x1)).all(axis=1)]
-
-        def cylinder_filter_coordinates(coords, centre, cylinder):
-            length = cylinder["length"]
-            radius = cylinder["radius"]
-            y0 = centre - length / 2.0
-            y1 = centre + length / 2.0
-            x = coords[:, 0]
-            y = coords[:, 1]
-            z = coords[:, 2]
-            return coords[
-                (y >= y0[0])
-                & (y < y1[0])
-                & ((z - centre[2]) ** 2 + (x - centre[1]) ** 2 <= radius**2)
-            ]
-
-        # Filter the coords
-        return {
-            "cube": cube_filter_coordinates,
-            "cuboid": cuboid_filter_coordinates,
-            "cylinder": cylinder_filter_coordinates,
-        }[shape["type"]](coords, centre, shape[shape["type"]])
+        return coords[shape_contains(coords, centre, shape)]
 
     # Cast input
     centre = np.array(centre)
@@ -155,7 +122,7 @@ def add_ice(sample, centre=None, shape=None, density=940.0, pack=False):
             r = radius * np.sqrt(np.random.uniform(0, 1, size=number_of_waters))
             t = np.random.uniform(0, 2 * pi, size=number_of_waters)
             x = centre_x + r * np.cos(t)
-            y = np.random.uniform(offset_y, offset_y + length_z, size=number_of_waters)
+            y = np.random.uniform(offset_y, offset_y + length_y, size=number_of_waters)
             z = centre_z + r * np.sin(t)
         translation = np.array((x, y, z)).T
 

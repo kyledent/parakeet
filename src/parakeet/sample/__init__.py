@@ -252,6 +252,53 @@ def shape_bounding_box(centre, shape):
     return (x0 + offset, x1 + offset)
 
 
+def shape_contains(coords, centre, shape):
+    """
+    Which points lie inside the sample shape
+
+    A cube or cuboid is half-open: it contains x0 <= p < x1 on every axis. A
+    cylinder lies along y: it contains the points with y0 <= y < y1 and
+    (x - cx)^2 + (z - cz)^2 <= radius^2. The cylinder's axis, offsets and
+    varying radius are not applied here.
+
+    Args:
+        coords (array): The points, (n, 3) x, y, z in A; a DataFrame of the
+            x, y and z columns also works
+        centre (array): The centre of the shape (x, y, z), A
+        shape (dict): The shape, as in the sample configuration
+
+    Returns:
+        array: A boolean mask, one entry per point
+
+    """
+    coords = np.asarray(coords, dtype=float).reshape(-1, 3)
+    centre = np.asarray(centre, dtype=float)
+    kind = shape["type"]
+    params = shape[kind]
+    if kind == "cube":
+        length = np.full(3, params["length"], dtype=float)
+    elif kind == "cuboid":
+        length = np.array(
+            (params["length_x"], params["length_y"], params["length_z"]), dtype=float
+        )
+    elif kind == "cylinder":
+        length = params["length"]
+        radius = params["radius"]
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        y0 = centre[1] - length / 2.0
+        y1 = centre[1] + length / 2.0
+        return (
+            (y >= y0)
+            & (y < y1)
+            & ((x - centre[0]) ** 2 + (z - centre[2]) ** 2 <= radius**2)
+        )
+    else:
+        raise RuntimeError("Unknown shape %r" % kind)
+    x0 = centre - length / 2.0
+    x1 = centre + length / 2.0
+    return ((coords >= x0) & (coords < x1)).all(axis=1)
+
+
 def shape_bounding_cylinder(centre, shape):
     """
     Compute the shape cylinder

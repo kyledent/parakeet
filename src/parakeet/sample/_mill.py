@@ -9,12 +9,12 @@
 # which is included in the root directory of this package.
 #
 import logging
-import numpy as np
 import parakeet.config
 import parakeet.data
 import parakeet.freeze
 from functools import singledispatch
 from parakeet.sample import Sample
+from parakeet.sample import shape_contains
 
 
 __all__ = ["mill"]
@@ -83,41 +83,7 @@ def _mill_Sample(config: parakeet.config.Sample, sample: Sample) -> Sample:
     """
 
     def shape_filter_coordinates(coords, centre, shape):
-        def cube_filter_coordinates(coords, centre, cube):
-            length = cube["length"]
-            x0 = centre - length / 2.0
-            x1 = centre + length / 2.0
-            return ((coords >= x0) & (coords < x1)).all(axis=1)
-
-        def cuboid_filter_coordinates(coords, centre, cuboid):
-            length_x = cuboid["length_x"]
-            length_y = cuboid["length_y"]
-            length_z = cuboid["length_z"]
-            length = np.array((length_x, length_y, length_z))
-            x0 = centre - length / 2.0
-            x1 = centre + length / 2.0
-            return ((coords >= x0) & (coords < x1)).all(axis=1)
-
-        def cylinder_filter_coordinates(coords, centre, cylinder):
-            length = cylinder["length"]
-            radius = cylinder["radius"]
-            y0 = centre - length / 2.0
-            y1 = centre + length / 2.0
-            x = coords["x"]
-            y = coords["y"]
-            z = coords["z"]
-            return (
-                (y >= y0[0])
-                & (y < y1[0])
-                & ((z - centre[2]) ** 2 + (x - centre[1]) ** 2 <= radius**2)
-            )
-
-        # Filter the coords
-        return {
-            "cube": cube_filter_coordinates,
-            "cuboid": cuboid_filter_coordinates,
-            "cylinder": cylinder_filter_coordinates,
-        }[shape["type"]](coords, centre, shape[shape["type"]])
+        return shape_contains(coords, centre, shape)
 
     class Deleter(object):
         def __init__(self, sample):
