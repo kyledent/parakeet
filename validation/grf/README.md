@@ -14,11 +14,33 @@ validation/grf/spectrum.py --outdir /scratch/$USER/grf   # where in frequency th
 Both build the same box twice — explicit water with the GRF off, an empty box with the GRF on —
 project with `parakeet simulate potential`, and compare. Results land in `results/`.
 
-> **`simulation.margin: 0` is forced by both scripts and must stay that way.** The GRF slab is
-> z-offset from the atoms by `margin × pixel_size`, so any other value silently compares two
-> different regions.
+> Both scripts force `simulation.margin: 0`. That was needed while the GRF slab sat
+> `(margin + padding) × pixel_size` above the atoms in z; the ice now moves laterally only, as the
+> atoms do, and `z_register.py` (below) shows it in a render.
+
+```bash
+validation/grf/z_register.py --outdir /scratch/$USER/grf    # is the ice where the shape is, in z?
+validation/grf/edge_bands.py --outdir /scratch/$USER/grf    # the edge bands of upstream issue #87
+```
+
+`z_register.py` renders the potential of an empty ice cuboid at margins 0 and 100 and compares the
+z-range MULTEM slices with the shape's. `edge_bands.py` renders the same ice twice, once as a shape
+that ends inside the simulation grid (the field) and once as a shape covering the whole grid, and
+measures the bands near the field's edges in the exit-wave phase and in the image.
+
+**A property of the masker to know when reading either:** it tests each slice at its *midpoint*
+against the half-open shape `[z0, z1)`. A slice whose midpoint falls exactly on a face is decided
+by rounding, and the rounding moves with the masker's rotation centre, which moves laterally with
+the margin. In `z_register.py`'s geometry the last slice (248–252 Å, midpoint 250 Å, the shape's top
+face) carries ice at margin 0 and none at margin 100, with the same z-range computed in both. The
+script reports such slices as boundary slices and does not count them against the register.
 
 ## What the comparison shows
+
+> The numbers in this section were measured before the engine band-limited the atomic potential
+> (the python-multem pin in `setup.py`). That change keeps each atom's full projected potential at
+> any pixel size, and the ice model follows it, so every value below changes; set
+> `MULTEM_BANDLIMITED_POTENTIAL=0` to reproduce them.
 
 ### The mean is right, including its pixel-size dependence
 
