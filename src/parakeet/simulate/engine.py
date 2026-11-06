@@ -13,6 +13,8 @@ import logging
 import numpy as np
 import warnings
 from math import sqrt, floor
+import parakeet.seeding
+from parakeet.engine_check import require_engine_features
 from collections.abc import Iterable
 
 
@@ -653,6 +655,18 @@ class SimulationEngine(object):
             masker.set_rotation(centre, (0, 0, 0))
         else:
             masker.set_rotation(centre, orientation)
+
+        # Seed the ice, so the same base seed and image give the same field
+        seed = simulation.get("seed")
+        if seed is not None:
+            require_engine_features("grf_seed", multem=multem)
+            image_number = int(scan.image_number[index])
+            grf_seed = parakeet.seeding.grf_seed(seed, image_number)
+            masker.set_seed(grf_seed)
+            logger.info(
+                "GRF ice seed %d (base seed %d, image %d)"
+                % (grf_seed, seed, image_number)
+            )
 
         # Get the masker
         return masker

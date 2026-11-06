@@ -25,9 +25,9 @@ which is present only when it was built from a git checkout that is not a
 release tag. The MULTEM commit is not recorded by the build: it is the MULTEM
 submodule commit of that python-multem commit.
 
-Exit status: 0 when the loaded python-multem was built from the pinned commit
-and has every feature in parakeet.engine_check.FEATURES; 1 otherwise (or always
-0 with --no-fail).
+Exit status: 0 when the loaded python-multem was built from the pinned commit;
+1 otherwise (or always 0 with --no-fail). The features in
+parakeet.engine_check.FEATURES are reported, not required.
 
 """
 import argparse
@@ -148,15 +148,17 @@ def collect():
 
 def ok(report):
     """
-    Whether the report shows the pinned engine with every feature
+    Whether the report shows the pinned engine
+
+    The commit the engine was built from is the identity check. Features are
+    reported, not required: the list names what this branch can use, which
+    can run ahead of the pin (a feature is added here before the engine that
+    has it is pinned), and parakeet refuses a missing one by name when a
+    configuration needs it.
 
     """
     engine = report["engine"]
-    return (
-        engine["importable"]
-        and report["pin_state"] == "match"
-        and all(engine["features"].values())
-    )
+    return engine["importable"] and report["pin_state"] == "match"
 
 
 def print_text(report):

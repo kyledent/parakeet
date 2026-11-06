@@ -19,6 +19,7 @@ import parakeet.inelastic
 import parakeet.io
 import parakeet.mtf
 import parakeet.sample
+import parakeet.seeding
 from parakeet.microscope import Microscope
 from parakeet.scan import Scan
 from functools import singledispatch
@@ -56,6 +57,11 @@ class ImageSimulator(object):
         self.optics = optics
         self.scan = scan
         self.simulation = simulation
+        # The base seed of the detector noise, resolved once per run: the
+        # configured one, or a fresh one recorded in the metadata
+        self.noise_seed = parakeet.seeding.resolve(
+            simulation.get("seed") if simulation else None
+        )
         self.device = device
         self.gpu_id = gpu_id
 
@@ -127,8 +133,18 @@ class ImageSimulator(object):
                     )
             logger.info("Applying MTF: %s" % mtf)
 
+        # The shot noise of this frame, from the base seed and the frame
+        header = self.optics.header[index]
+        rng = parakeet.seeding.detector_rng(
+            self.noise_seed, header["image_number"], header["fraction_number"]
+        )
         image = parakeet.mtf.detect(
-            image, electrons_per_pixel, mtf=mtf, dqe=dqe, backend=_fft_backend
+            image,
+            electrons_per_pixel,
+            mtf=mtf,
+            dqe=dqe,
+            rng=rng,
+            backend=_fft_backend,
         )
 
         # Print some info
@@ -143,6 +159,7 @@ class ImageSimulator(object):
         metadata["dqe"] = self.microscope.detector.dqe
         metadata["gain"] = 1
         metadata["offset"] = 0
+        metadata["noise_seed"] = self.noise_seed
 
         # Compute the image scaled with Poisson noise
         return (index, image.astype("float32"), metadata)

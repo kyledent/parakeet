@@ -114,6 +114,13 @@ METADATA_DTYPE = np.dtype(
         ("inelastic_model", "S16"),
         ("damage_model", "?"),
         ("sensitivity_coefficient", "f8"),
+        #
+        # Seeds (-1 = not used). MRC's extended header has no field for them,
+        # so an MRC file reads them back as 0; the log records them too.
+        #
+        ("seed", "i8"),
+        ("grf_seed", "i8"),
+        ("noise_seed", "i8"),
     ]
 )
 
@@ -762,8 +769,13 @@ class NexusHeader(Header):
         """
         Get the mapping between names
 
+        A field this file was written without (by an older version) reads as
+        zero, as an unmapped field of an MRC header does.
+
         """
         mapping = self.mapping(key)
+        if mapping not in self._handle:
+            return np.zeros(shape=self.size, dtype=self.dtype.fields[key][0])[index]
         return self._handle[mapping][index]
 
     def set(self, index, key, value):

@@ -19,7 +19,13 @@ from parakeet.engine_check import (
 )
 
 
-def fake_engine(m0=True, regions=True, toggle=True):
+def fake_engine(m0=True, regions=True, toggle=True, spacing=True, seed=True):
+    class Masker:
+        pass
+
+    if seed:
+        Masker.set_seed = lambda self, value: None
+
     class IceParameters:
         def __init__(self):
             self.m1 = 0.0
@@ -33,6 +39,9 @@ def fake_engine(m0=True, regions=True, toggle=True):
         module.MultiRegionMasker = object
     if toggle:
         module.band_limited_potential = lambda: True
+    if spacing:
+        module.band_limit_spacing = lambda x, y: 1.0
+    module.Masker = Masker
     return module
 
 
@@ -41,7 +50,7 @@ def test_every_feature_present():
 
 
 def test_an_old_engine_is_refused_by_name():
-    old = fake_engine(m0=False, regions=False, toggle=False)
+    old = fake_engine(m0=False, regions=False, toggle=False, spacing=False, seed=False)
     assert not any(engine_features(old).values())
     with pytest.raises(EngineFeatureError) as error:
         require_engine_features("multi_region_masker", "ice_m0", multem=old)

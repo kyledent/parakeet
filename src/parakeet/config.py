@@ -854,6 +854,17 @@ class Simulation(BaseModel):
         IceParameters(), description="The parameters for the GRF ice model"
     )
 
+    seed: Optional[int] = Field(
+        None,
+        ge=0,
+        description=(
+            "The base seed of the simulation's random parts: the GRF ice (one "
+            "field per image, shared by its fractions) and the detector noise "
+            "(per frame). None draws a fresh one per run, recorded in the "
+            "output metadata (seed, noise_seed) and the log"
+        ),
+    )
+
     allow_uncalibrated_sampling: bool = Field(
         False,
         description=(

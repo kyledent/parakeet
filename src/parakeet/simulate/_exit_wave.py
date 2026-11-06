@@ -20,10 +20,12 @@ import parakeet.inelastic
 import parakeet.io
 import parakeet.sample
 import parakeet.sample.motion
+import parakeet.seeding
 import parakeet.simulate
 from parakeet.config import Device
 from parakeet.simulate.simulation import Simulation
 from parakeet.simulate.engine import SimulationEngine
+from parakeet.engine_check import engine_features
 from parakeet.microscope import Microscope
 from functools import singledispatch
 from math import pi
@@ -35,6 +37,23 @@ __all__ = ["exit_wave"]
 
 # Get the logger
 logger = logging.getLogger(__name__)
+
+
+def resolve_ice_seed(simulation):
+    """
+    The simulation parameters with the ice's base seed resolved, once per run
+
+    A configured seed is kept. With none, a fresh one is drawn when the engine
+    can be seeded, so the run can be reproduced from its metadata; an engine
+    that cannot be seeded leaves the ice unseeded, as before.
+
+    """
+    if simulation is None or not simulation.get("ice"):
+        return simulation
+    seed = simulation.get("seed")
+    if seed is None and not engine_features()["grf_seed"]:
+        return simulation
+    return dict(simulation, seed=parakeet.seeding.resolve(seed))
 
 
 class ExitWaveImageSimulator(object):
@@ -60,7 +79,7 @@ class ExitWaveImageSimulator(object):
         self.microscope = microscope
         self.sample = sample
         self.scan = scan
-        self.simulation = simulation
+        self.simulation = resolve_ice_seed(simulation)
         self.particle_tracks = particle_tracks
         self.device = device
         self.gpu_id = gpu_id
@@ -269,6 +288,11 @@ class ExitWaveImageSimulator(object):
         metadata["image_size_x"] = nx
         metadata["image_size_y"] = ny
         metadata["ice"] = self.simulation["ice"]
+        seed = self.simulation.get("seed") if self.simulation["ice"] else None
+        metadata["seed"] = -1 if seed is None else seed
+        metadata["grf_seed"] = (
+            -1 if seed is None else parakeet.seeding.grf_seed(seed, image_number)
+        )
         metadata["damage_model"] = self.simulation["radiation_damage_model"]
         metadata["sensitivity_coefficient"] = self.simulation["sensitivity_coefficient"]
         metadata["exposure_time"] = exposure_time

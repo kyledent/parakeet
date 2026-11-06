@@ -46,6 +46,11 @@ FEATURES = {
     # that the extension behind it was built with the band-limited tables. The
     # build's commit (engine_identity()["commit"]) is the identity check.
     "band_limited_toggle": lambda multem: hasattr(multem, "band_limited_potential"),
+    # The band-limited potential's grid spacing, bound from the compiled
+    # extension: unlike the toggle, it shows the extension itself is recent.
+    "band_limit_spacing": lambda multem: hasattr(multem, "band_limit_spacing"),
+    # A seed for the GRF ice, carried by the masker, so its field is reproducible.
+    "grf_seed": lambda multem: hasattr(multem.Masker(), "set_seed"),
 }
 
 PIN_HINT = (
