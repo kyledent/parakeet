@@ -97,9 +97,10 @@ class ProjectedPotentialSimulator(object):
         # Get the specimen atoms
         logger.info(f"Simulating image {index+1}")
 
-        # Create the sample extractor
-        x0 = (-offset, -offset)
-        x1 = (x_fov + offset, y_fov + offset)
+        # The field: the detector's, from its origin, as the exit wave's
+        origin = np.array(self.microscope.detector.origin, dtype=float)
+        x0 = (origin[0] - offset, origin[1] - offset)
+        x1 = (origin[0] + x_fov + offset, origin[1] + y_fov + offset)
 
         # The Z centre
         z_centre = self.sample.centre[2]
@@ -120,9 +121,10 @@ class ProjectedPotentialSimulator(object):
         simulate.input.spec_ly = y_fov + offset * 2
         simulate.input.spec_lz = self.sample.containing_box[1][2]
 
-        # Set the atoms in the input after translating them for the offset
-        atoms = self.sample.get_atoms_in_fov(x0, x1)
-        logger.info("Simulating with %d atoms" % atoms.data.shape[0])
+        # Set the atoms in the input after translating them for the offset. They
+        # are selected after the rotation, as the exit wave's are, so the atoms
+        # a tilt brings into the field are kept
+        atoms = self.sample.get_atoms()
 
         # Set atom sigma
         # atoms.data["sigma"] = sigma_B
@@ -137,8 +139,10 @@ class ProjectedPotentialSimulator(object):
             atoms.data["x"] = coords[:, 0]
             atoms.data["y"] = coords[:, 1]
             atoms.data["z"] = coords[:, 2]
+            xy = atoms.data[["x", "y"]].to_numpy()
+            atoms.data = atoms.data[((xy >= x0) & (xy < x1)).all(axis=1)]
+        logger.info("Simulating with %d atoms" % atoms.data.shape[0])
 
-        origin = (0, 0)
         simulate.input.spec_atoms = atoms.translate(
             (offset - origin[0], offset - origin[1], 0)
         ).to_multem()

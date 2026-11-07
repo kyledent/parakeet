@@ -65,7 +65,9 @@ def render_with_ice(directory, ice_parameters, seed=1234):
     return render(directory, None, seed=seed, ice_parameters=ice_parameters)
 
 
-def render(directory, regions, materials=None, seed=1234, ice_parameters=None):
+def render(
+    directory, regions, materials=None, seed=1234, ice_parameters=None, origin=(0, 0)
+):
     directory.mkdir()
     # MULTEM slices only where there are atoms: two hydrogen atoms near a
     # corner of the field, one just inside each face of the slab
@@ -92,7 +94,12 @@ def render(directory, regions, materials=None, seed=1234, ice_parameters=None):
     config = {
         "microscope": {
             "beam": {"energy": 300, "electrons_per_angstrom": 30.0},
-            "detector": {"nx": NX, "ny": NX, "pixel_size": ANGPIX},
+            "detector": {
+                "nx": NX,
+                "ny": NX,
+                "pixel_size": ANGPIX,
+                "origin": list(origin),
+            },
         },
         "sample": sample,
         "scan": {"mode": "still", "num_images": 1},
@@ -422,9 +429,9 @@ def test_a_vacuum_region_needs_the_engine_to_support_it(tmp_path):
         )
 
 
-def potential_of(directory, regions, materials=None):
+def potential_of(directory, regions, materials=None, origin=(0, 0)):
     """The projected potential volume (slices, ny, nx) of render()'s sample"""
-    _, path = render(directory, regions, materials=materials)
+    _, path = render(directory, regions, materials=materials, origin=origin)
     parakeet.simulate.potential(
         str(path), str(directory / "sample.h5"), str(directory / "potential")
     )
@@ -482,3 +489,40 @@ def test_the_projected_potential_of_regions(tmp_path):
             % (name, mean, se, expected[name], per_slice.size)
         )
         assert mean == pytest.approx(expected[name], rel=0.01, abs=5 * se)
+
+
+def test_the_potential_and_the_exit_wave_cover_the_same_field(tmp_path):
+    # With the detector's origin moved, a dense band at sample x 300..400 A
+    # falls on the field's x 100..200 A in the projected potential and in the
+    # exit wave alike (and along x, not y, in both)
+    if not engine_features(multem)["multi_region_potential"]:
+        pytest.skip("this engine has no multi-region projected potential")
+    origin = (200, 0)
+    regions = doc(
+        box("slab", -FAR, FIELD + FAR),
+        box("band", 300.0, 400.0, material="dense", parent="slab"),
+    )
+    volume = potential_of(
+        tmp_path / "potential", regions, materials={"dense": DENSE}, origin=origin
+    )
+    psi, _ = render(tmp_path / "wave", regions, materials={"dense": DENSE}, origin=origin)
+    profiles = {
+        "potential": volume.sum(axis=0).mean(axis=0),
+        "potential across": volume.sum(axis=0).mean(axis=1),
+        "exit wave": np.unwrap(np.angle(psi[MARGIN:-MARGIN, MARGIN:-MARGIN]))
+        .mean(axis=0),
+    }
+
+    def edges(profile):
+        low, high = np.percentile(profile, [10, 90])
+        above = np.flatnonzero(profile > (low + high) / 2)
+        return above.min(), above.max(), (high - low) / abs(high)
+
+    expected = (100.0 / ANGPIX, 200.0 / ANGPIX)
+    for name in ("potential", "exit wave"):
+        first, last, contrast = edges(profiles[name])
+        print("%s: band at pixels %d..%d, expected %.1f..%.1f" % ((name, first, last) + expected))
+        assert contrast > 0.2
+        assert abs(first - expected[0]) <= 1.5 and abs(last - expected[1]) <= 1.5
+    across = profiles["potential across"]
+    assert across.std() < 0.05 * abs(across.mean())

@@ -673,7 +673,9 @@ class SimulationEngine(object):
                 "Calculating potential for slice: %.2f -> %.2f (index: %d)"
                 % (z0, z1, index)
             )
-            if index < out.data.shape[0]:
+            # Slices outside the volume (a tilted sample can reach past it) are
+            # left out; a negative index would otherwise wrap to the far end
+            if 0 <= index < out.data.shape[0]:
                 x0 = margin
                 y0 = margin
                 x1 = V.shape[1] - margin
