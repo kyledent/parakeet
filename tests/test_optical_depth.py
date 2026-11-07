@@ -354,12 +354,14 @@ def test_exact_paths_through_a_tilted_slab_and_a_nested_sphere():
     ids=["ellipsoid_cut", "shell", "slab_disc_clip"],
 )
 def test_exact_paths_agree_with_fine_sampling(entry):
-    document = doc(slab("w", -5000, 5000, "water", z0=0, z1=200), entry)
+    # The film reaches past the field at 35 degrees (+-600 A about its centre)
+    # without making the rays long, which the sampled reference pays for
+    document = doc(slab("w", -400, 800, "water", z0=0, z1=200), entry)
     exact = paths(document, orientation=(0, np.radians(35), 0))
-    fine = paths(document, orientation=(0, np.radians(35), 0), exact=False, step=0.05)
+    fine = paths(document, orientation=(0, np.radians(35), 0), exact=False, step=0.1)
     for m in exact:
         # Sampling is good to about one step per boundary crossed
-        assert np.abs(exact[m] - fine[m]).max() < 0.05 * 6
+        assert np.abs(exact[m] - fine[m]).max() < 0.1 * 6
     assert (
         np.abs(exact["water"] + exact["dense"] - 200 / np.cos(np.radians(35))).max()
         < 1e-9
