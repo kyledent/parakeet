@@ -16,7 +16,9 @@ import yaml
 from enum import Enum
 from pydantic import ConfigDict, BaseModel as PydanticBaseModel
 from pydantic import Field
+from typing import Dict
 from typing import List
+from typing import Literal
 from typing import Optional
 from typing import Tuple
 from typing import Union
@@ -441,6 +443,19 @@ class SampleMotion(BaseModel):
     )
 
 
+class SampleRegions(BaseModel):
+    """
+    Where a sample's regions come from: a file or the document itself
+
+    """
+
+    file: Optional[str] = Field(None, description="A parakeet-regions/1 JSON file")
+
+    document: Optional[dict] = Field(
+        None, description="A parakeet-regions/1 document given inline"
+    )
+
+
 class Sample(BaseModel):
     """
     A model to describe the sample
@@ -481,6 +496,16 @@ class Sample(BaseModel):
 
     motion: Optional[SampleMotion] = Field(
         None, description="The sample motion parameters"
+    )
+
+    regions: Optional[SampleRegions] = Field(
+        None,
+        description=(
+            "Regions of material (a parakeet-regions/1 document). With "
+            "regions, the specimen's continuum is the regions and their "
+            "medium instead of ice filling the shape; simulation.ice must be "
+            "true"
+        ),
     )
 
 
@@ -844,6 +869,46 @@ class IceParameters(BaseModel):
     density: float = Field(0.94, gt=0, description="The density of the ice (g/cm^3)")
 
 
+class Material(IceParameters):
+    """
+    A material of the specimen's continuum, for sample.regions
+
+    The fields are the GRF ice model's, applied to another material: the
+    spectrum (m1, m2, s1, s2, a1, a2) and a density that the engine turns into
+    a number of water molecules per unit volume. The engine's mean and variance
+    per molecule are water's unless mean_constant and variance_constant are
+    given, so a material that is not water needs those constants, in the
+    engine's units per water-equivalent molecule.
+
+    """
+
+    representation: Literal["grf"] = Field(
+        "grf",
+        description=(
+            "How the material is represented: grf, a Gaussian random field "
+            "drawn per slice (the only one so far)"
+        ),
+    )
+
+    mean_constant: Optional[float] = Field(
+        None,
+        gt=0,
+        description=(
+            "The engine's mean potential per molecule (V A^3), replacing "
+            "water's; None keeps water's"
+        ),
+    )
+
+    variance_constant: Optional[float] = Field(
+        None,
+        gt=0,
+        description=(
+            "The engine's potential variance per molecule, replacing water's; "
+            "None keeps water's"
+        ),
+    )
+
+
 class Simulation(BaseModel):
     """
     A model to describe the simulation parameters
@@ -883,6 +948,15 @@ class Simulation(BaseModel):
             "Run the GRF ice model at a pixel area above 4 A^2 with the "
             "band-limited potential off, where its corrections clamp (warns "
             "instead of raising)"
+        ),
+    )
+
+    materials: Optional[Dict[str, Material]] = Field(
+        None,
+        description=(
+            "The materials sample.regions may name, by name. 'water' is the "
+            "ice (ice_parameters) unless defined here; 'vacuum' is always "
+            "available"
         ),
     )
 

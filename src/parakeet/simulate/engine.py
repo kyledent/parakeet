@@ -13,6 +13,7 @@ import logging
 import numpy as np
 import warnings
 from math import sqrt, floor
+import parakeet.sample._regions
 import parakeet.seeding
 from parakeet.engine_check import require_engine_features
 from collections.abc import Iterable
@@ -138,6 +139,135 @@ def engine_band_limited():
     """
     function = getattr(multem, "band_limited_potential", None)
     return bool(function()) if function is not None else False
+
+
+def set_sample_shape(masker, shape, centre):
+    """
+    Give a masker the sample's shape (cube, cuboid or cylinder) at a centre
+
+    Args:
+        masker: A multem.Masker
+        shape: The sample's shape dictionary
+        centre: The shape's centre in the simulation's frame
+
+    """
+    # Set the shape
+    if shape["type"] == "cube":
+        length = shape["cube"]["length"]
+        masker.set_cuboid(
+            (
+                centre[0] - length / 2,
+                centre[1] - length / 2,
+                centre[2] - length / 2,
+            ),
+            (length, length, length),
+        )
+    elif shape["type"] == "cuboid":
+        length_x = shape["cuboid"]["length_x"]
+        length_y = shape["cuboid"]["length_y"]
+        length_z = shape["cuboid"]["length_z"]
+        masker.set_cuboid(
+            (
+                centre[0] - length_x / 2,
+                centre[1] - length_y / 2,
+                centre[2] - length_z / 2,
+            ),
+            (length_x, length_y, length_z),
+        )
+    elif shape["type"] == "cylinder":
+        radius = shape["cylinder"]["radius"]
+        if not isinstance(radius, Iterable):
+            radius = [radius]
+        length = shape["cylinder"]["length"]
+        offset_x = shape["cylinder"].get("offset_x", [0] * len(radius))
+        offset_z = shape["cylinder"].get("offset_z", [0] * len(radius))
+        axis = shape["cylinder"].get("axis", (0, 1, 0))
+        masker.set_cylinder(
+            (centre[0], centre[1] - length / 2, centre[2]),
+            axis,
+            length,
+            list(radius),
+            list(offset_x),
+            list(offset_z),
+        )
+
+
+def set_region_shape(masker, region, place):
+    """
+    Give a masker a region's shape
+
+    Args:
+        masker: A multem.Masker
+        region: A parakeet.sample._regions.Region
+        place: Maps a point in the sample frame to the simulation's frame
+
+    """
+    g = region.geometry
+    if region.kind == "box":
+        h = g["half_lengths_A"]
+        masker.set_cuboid(tuple(place(g["centre_A"] - h)), tuple(2 * h))
+    elif region.kind == "sphere":
+        masker.set_sphere(tuple(place(g["centre_A"])), g["radius_A"])
+    elif region.kind == "cylinder":
+        a = g["axis"]
+        start = place(g["centre_A"] - a * g["length_A"] / 2)
+        masker.set_cylinder(
+            tuple(start), tuple(a), g["length_A"], [g["radius_A"]], [0.0], [0.0]
+        )
+    else:
+        raise ValueError("Unknown region kind %r" % region.kind)
+
+
+# A vacuum region's GRF constants: never drawn (the engine skips a region with
+# no density) but its shape is still subtracted from the regions below it
+VACUUM_PARAMETERS = {"density": 0.0}
+
+
+def engine_materials(simulation):
+    """
+    The materials a sample's regions may name, as dictionaries of GRF constants
+
+    'water' is the ice (simulation.ice_parameters) unless simulation.materials
+    defines it.
+
+    """
+    materials = {"water": dict(simulation["ice_parameters"])}
+    for name, material in (simulation.get("materials") or {}).items():
+        materials[name] = dict(material)
+    return materials
+
+
+def grf_parameters(material):
+    """
+    A multem.IceParameters from a material's constants
+
+    """
+    p = multem.IceParameters()
+    for key in ("m1", "m2", "s1", "s2", "a1", "a2", "density"):
+        if key in material:
+            setattr(p, key, material[key])
+    if material.get("mean_constant") is not None:
+        p.m0 = material["mean_constant"]
+    if material.get("variance_constant") is not None:
+        p.v0 = material["variance_constant"]
+    return p
+
+
+def seed_masker(masker, index, scan, simulation):
+    """
+    Seed a masker's GRF from the base seed and the image, if a seed is set
+
+    """
+    seed = simulation.get("seed")
+    if seed is None:
+        return
+    require_engine_features("grf_seed", multem=multem)
+    image_number = int(scan.image_number[index])
+    grf_seed = parakeet.seeding.grf_seed(seed, image_number)
+    masker.set_seed(grf_seed)
+    logger.info(
+        "GRF ice seed %d (base seed %d, image %d)" % (grf_seed, seed, image_number)
+    )
 
 
 class SimulationEngine(object):
@@ -495,6 +625,14 @@ class SimulationEngine(object):
         Simulate the potential
 
         """
+        # The engine's projected potential takes one ice region, not several
+        if isinstance(masker, getattr(multem, "MultiRegionMasker", ())):
+            raise NotImplementedError(
+                "The projected potential of a sample with regions of material "
+                "needs a multi-region compute_projected_potential, which the "
+                "engine does not have yet; simulate the exit wave instead"
+            )
+
         # Set the incident wave
         self.input.iw_x = [self.input.spec_lx / 2]
         self.input.iw_y = [self.input.spec_ly / 2]
@@ -592,6 +730,20 @@ class SimulationEngine(object):
             simulation.get("allow_uncalibrated_sampling", False),
         )
 
+        # A sample with regions of material gets one region per material piece
+        if getattr(sample, "regions", None) is not None:
+            return self.multi_region_masker(
+                index,
+                pixel_size,
+                origin,
+                offset,
+                orientation,
+                shift,
+                sample,
+                scan,
+                simulation,
+            )
+
         # Create the masker
         masker = multem.Masker(self.input.nx, self.input.ny, pixel_size)
 
@@ -609,46 +761,7 @@ class SimulationEngine(object):
         # Get the sample centre
         shape = sample.shape
         centre = ice_centre(sample.centre, offset, origin, shift)
-
-        # Set the shape
-        if shape["type"] == "cube":
-            length = shape["cube"]["length"]
-            masker.set_cuboid(
-                (
-                    centre[0] - length / 2,
-                    centre[1] - length / 2,
-                    centre[2] - length / 2,
-                ),
-                (length, length, length),
-            )
-        elif shape["type"] == "cuboid":
-            length_x = shape["cuboid"]["length_x"]
-            length_y = shape["cuboid"]["length_y"]
-            length_z = shape["cuboid"]["length_z"]
-            masker.set_cuboid(
-                (
-                    centre[0] - length_x / 2,
-                    centre[1] - length_y / 2,
-                    centre[2] - length_z / 2,
-                ),
-                (length_x, length_y, length_z),
-            )
-        elif shape["type"] == "cylinder":
-            radius = shape["cylinder"]["radius"]
-            if not isinstance(radius, Iterable):
-                radius = [radius]
-            length = shape["cylinder"]["length"]
-            offset_x = shape["cylinder"].get("offset_x", [0] * len(radius))
-            offset_z = shape["cylinder"].get("offset_z", [0] * len(radius))
-            axis = shape["cylinder"].get("axis", (0, 1, 0))
-            masker.set_cylinder(
-                (centre[0], centre[1] - length / 2, centre[2]),
-                axis,
-                length,
-                list(radius),
-                list(offset_x),
-                list(offset_z),
-            )
+        set_sample_shape(masker, shape, centre)
 
         # Rotate unless we have a single particle type simulation
         if scan.is_uniform_angular_scan:
@@ -657,16 +770,88 @@ class SimulationEngine(object):
             masker.set_rotation(centre, orientation)
 
         # Seed the ice, so the same base seed and image give the same field
-        seed = simulation.get("seed")
-        if seed is not None:
-            require_engine_features("grf_seed", multem=multem)
-            image_number = int(scan.image_number[index])
-            grf_seed = parakeet.seeding.grf_seed(seed, image_number)
-            masker.set_seed(grf_seed)
-            logger.info(
-                "GRF ice seed %d (base seed %d, image %d)"
-                % (grf_seed, seed, image_number)
-            )
+        seed_masker(masker, index, scan, simulation)
 
         # Get the masker
+        return masker
+
+    def multi_region_masker(
+        self,
+        index,
+        pixel_size,
+        origin,
+        offset,
+        orientation,
+        shift,
+        sample,
+        scan,
+        simulation,
+    ):
+        """
+        Get a multi-region masker for a sample with regions of material
+
+        Each region subtracts every region that outranks it, so each point gets
+        the material of the one region that owns it (parakeet.sample._regions);
+        the medium fills the sample shape less every region.
+
+        """
+        require_engine_features("multi_region_masker", "ice_m0", multem=multem)
+        if not simulation["ice"]:
+            raise ValueError(
+                "The sample has regions of material, which are drawn by the GRF "
+                "model: set simulation.ice to true"
+            )
+        materials = engine_materials(simulation)
+        medium, regions = parakeet.sample._regions.parse(
+            sample.regions, materials=materials
+        )
+        parakeet.sample._regions.check_nesting(regions)
+        vacuum = parakeet.sample._regions.VACUUM
+        holes = [r.id for r in regions if r.material == vacuum]
+        if holes:
+            require_engine_features("vacuum_regions", multem=multem)
+
+        # Everything moves with the atoms: the same lateral offset and shift
+        def place(point):
+            return ice_centre(point, offset, origin, shift)
+
+        # Slots: the medium (if any) first, then the regions in document order.
+        # A region's subtractions name slots, so all slots are fixed first.
+        first = 0 if medium == vacuum else 1
+        slot = {r.id: first + i for i, r in enumerate(regions)}
+        plan = parakeet.sample._regions.paint_plan(regions)
+
+        masker = multem.MultiRegionMasker(self.input.nx, self.input.ny, pixel_size)
+        if medium != vacuum:
+            shape_masker = multem.Masker(self.input.nx, self.input.ny, pixel_size)
+            set_sample_shape(shape_masker, sample.shape, place(sample.centre))
+            masker.add_region(
+                shape_masker,
+                grf_parameters(materials[medium]),
+                [slot[r.id] for r in regions],
+            )
+        for r in regions:
+            region_masker = multem.Masker(self.input.nx, self.input.ny, pixel_size)
+            set_region_shape(region_masker, r, place)
+            material = (
+                VACUUM_PARAMETERS if r.material == vacuum else materials[r.material]
+            )
+            masker.add_region(
+                region_masker,
+                grf_parameters(material),
+                [slot[other] for other in plan[r.id]],
+            )
+
+        # Rotate about the sample centre, as the atoms are
+        centre = place(sample.centre)
+        if scan.is_uniform_angular_scan:
+            masker.set_rotation(centre, (0, 0, 0))
+        else:
+            masker.set_rotation(centre, orientation)
+
+        seed_masker(masker, index, scan, simulation)
+        logger.info(
+            "Regions: %d, medium %s, %d masker regions"
+            % (len(regions), medium, masker.num_regions())
+        )
         return masker

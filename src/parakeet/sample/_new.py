@@ -16,6 +16,7 @@ import time
 import parakeet.config
 import parakeet.data
 import parakeet.freeze
+import parakeet.sample._regions
 from math import pi, floor
 from scipy.spatial.transform import Rotation
 from functools import singledispatch
@@ -307,6 +308,37 @@ def add_ice(sample, centre=None, shape=None, density=940.0, pack=False):
     return sample
 
 
+def regions_document(config: parakeet.config.SampleRegions) -> str:
+    """
+    Read and check a sample's regions, and return them as stored
+
+    Args:
+        config: Where the regions come from
+
+    Returns:
+        str: The normalised parakeet-regions/1 document
+
+    """
+    if (config.file is None) == (config.document is None):
+        raise parakeet.sample._regions.RegionsError(
+            "sample.regions needs exactly one of file and document"
+        )
+    document = parakeet.sample._regions.load(
+        config.file if config.file is not None else config.document
+    )
+    medium, regions = parakeet.sample._regions.parse(document)
+    parakeet.sample._regions.check_nesting(regions)
+    logger.info(
+        "Regions: %d, medium %s; materials %s"
+        % (
+            len(regions),
+            medium,
+            parakeet.sample._regions.materials_used(medium, regions),
+        )
+    )
+    return parakeet.sample._regions.to_json(medium, regions)
+
+
 @singledispatch
 def new(config_file, sample_file: str) -> Sample:
     """
@@ -374,6 +406,10 @@ def _new_Sample(config: parakeet.config.Sample, filename: str) -> Sample:
     sample.containing_box = ((0, 0, 0), box)
     sample.centre = centre
     sample.shape = shape
+
+    # Store the regions of material, checked as far as the sample can be
+    if config.regions is not None:
+        sample.regions = regions_document(config.regions)
 
     # Add some ice
     if ice is not None and ice.generate:

@@ -1,0 +1,326 @@
+#
+# test_regions_render_gpu.py
+#
+# Regions of material rendered through the multislice engine: each point gets
+# the material of the one region that owns it, a material's mean phase scales
+# with its density, a nested region displaces its parent rather than adding to
+# it, and a cylinder renders along any axis. Needs a CUDA GPU and an engine
+# with a multi-region masker; skipped otherwise (as in CI).
+#
+# Phases are measured against stated predictions, with a tolerance of five
+# standard errors estimated from 8 x 8 pixel blocks of the same image.
+#
+import numpy as np
+import pytest
+import yaml
+
+import parakeet.io
+import parakeet.sample
+import parakeet.simulate
+from parakeet.engine_check import EngineFeatureError, engine_features, import_multem
+
+multem = import_multem()
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(
+        multem is None
+        or not getattr(multem, "is_gpu_available", lambda: False)()
+        or not engine_features(multem)["multi_region_masker"]
+        or not engine_features(multem)["grf_seed"],
+        reason="needs a CUDA GPU and an engine with a multi-region masker",
+    ),
+]
+
+NX = 256
+ANGPIX = 1.5
+FIELD = NX * ANGPIX  # 384 A
+THICKNESS = 120.0
+MARGIN = 20  # pixels; the exit wave keeps them
+FAR = 2000.0  # A: regions reach past the simulation grid so their edges do not
+#               fringe into the field
+WATER_DENSITY = 0.94
+DENSE = {"density": 2 * WATER_DENSITY}  # twice the molecules, twice the mean
+
+
+def doc(*regions, medium="vacuum"):
+    return {"schema": "parakeet-regions/1", "medium": medium, "regions": list(regions)}
+
+
+def box(
+    id, x0, x1, material="water", y0=-FAR, y1=FIELD + FAR, z0=0.0, z1=THICKNESS, **kw
+):
+    return dict(
+        id=id,
+        kind="box",
+        material=material,
+        centre_A=[(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2],
+        half_lengths_A=[(x1 - x0) / 2, (y1 - y0) / 2, (z1 - z0) / 2],
+        **kw,
+    )
+
+
+def render(directory, regions, materials=None, seed=1234):
+    directory.mkdir()
+    # MULTEM slices only where there are atoms: two hydrogen atoms near a
+    # corner of the field, one just inside each face of the slab
+    anchors = directory / "anchors.pdb"
+    anchors.write_text(
+        "".join(
+            "HETATM%5d  H   HOH A%4d    %8.3f%8.3f%8.3f  1.00  0.00           H\n"
+            % (i, i, FIELD - 6, FIELD - 6, z)
+            for i, z in enumerate((1.0, THICKNESS - 1.0), start=1)
+        )
+        + "END\n"
+    )
+    sample = {
+        "coords": {"filename": str(anchors), "recentre": False},
+        "box": [FIELD, FIELD, THICKNESS],
+        "centre": [FIELD / 2, FIELD / 2, THICKNESS / 2],
+        "shape": {
+            "type": "cuboid",
+            "cuboid": {"length_x": FIELD, "length_y": FIELD, "length_z": THICKNESS},
+        },
+    }
+    if regions is not None:
+        sample["regions"] = {"document": regions}
+    config = {
+        "microscope": {
+            "beam": {"energy": 300, "electrons_per_angstrom": 30.0},
+            "detector": {"nx": NX, "ny": NX, "pixel_size": ANGPIX},
+        },
+        "sample": sample,
+        "scan": {"mode": "still", "num_images": 1},
+        "simulation": {
+            "ice": True,
+            "seed": seed,
+            "margin": MARGIN,
+            "padding": 20,
+            "materials": materials,
+        },
+        "multiprocessing": {"device": "gpu", "nproc": 1, "gpu_id": [0]},
+    }
+    path = directory / "config.yaml"
+    path.write_text(yaml.safe_dump(config))
+    parakeet.sample.new(str(path), str(directory / "sample.h5"))
+    parakeet.simulate.exit_wave(
+        str(path), str(directory / "sample.h5"), str(directory / "exit_wave.h5")
+    )
+    reader = parakeet.io.open(str(directory / "exit_wave.h5"))
+    return np.asarray(reader.data[0], dtype=np.complex128), path
+
+
+def px(x):
+    """The exit-wave pixel of a sample coordinate (A); the margin is kept"""
+    return int(round(x / ANGPIX)) + MARGIN
+
+
+def window(x0, x1, y0, y1):
+    """Rows (y) and columns (x) of a window given in sample coordinates (A)"""
+    return slice(px(y0), px(y1)), slice(px(x0), px(x1))
+
+
+def phase_against(psi, reference):
+    """The phase relative to the mean wave over a reference window"""
+    ref = psi[reference].mean()
+    return np.angle(psi * np.conj(ref / abs(ref)))
+
+
+def mean_and_se(values, b=8):
+    """The mean of a window, and its standard error from b x b block means"""
+    ny, nx = (values.shape[0] // b) * b, (values.shape[1] // b) * b
+    blocks = values[:ny, :nx].reshape(ny // b, b, nx // b, b).mean(axis=(1, 3))
+    return float(values.mean()), float(blocks.std(ddof=1) / np.sqrt(blocks.size))
+
+
+def masked_mean_and_se(values, mask, b=8):
+    """As mean_and_se, over the pixels of a mask, with blocks that are inside it"""
+    ny, nx = (values.shape[0] // b) * b, (values.shape[1] // b) * b
+    v = values[:ny, :nx].reshape(ny // b, b, nx // b, b)
+    m = mask[:ny, :nx].reshape(ny // b, b, nx // b, b)
+    full = m.all(axis=(1, 3))
+    blocks = v.mean(axis=(1, 3))[full]
+    return float(values[mask].mean()), float(blocks.std(ddof=1) / np.sqrt(blocks.size))
+
+
+def test_the_ice_path_and_a_water_medium_with_no_regions_agree(tmp_path):
+    old, _ = render(tmp_path / "ice", None)
+    new, _ = render(tmp_path / "medium", doc(medium="water"))
+    whole = (slice(MARGIN, MARGIN + NX), slice(MARGIN, MARGIN + NX))
+    a = np.angle(old[whole] / old[whole].mean())
+    b = np.angle(new[whole] / new[whole].mean())
+    print(
+        "ice path vs water medium: phase s.d. %.5f vs %.5f; field difference %.3g relative"
+        % (a.std(), b.std(), np.abs(old - new).max() / np.abs(old).max())
+    )
+    assert b.std() == pytest.approx(a.std(), rel=0.05)
+    assert abs(new[whole].mean()) == pytest.approx(abs(old[whole].mean()), rel=0.01)
+    assert np.angle(new[whole].mean() / old[whole].mean()) == pytest.approx(0, abs=0.02)
+
+
+def test_three_materials_side_by_side(tmp_path):
+    # Water for x < 128 A, a twice-as-dense material for 128 <= x < 256, and
+    # vacuum (the medium) beyond
+    psi, _ = render(
+        tmp_path / "three",
+        doc(box("water", -FAR, 128.0), box("dense", 128.0, 256.0, material="dense")),
+        materials={"dense": DENSE},
+    )
+    vacuum = window(280, 370, 0, FIELD)
+    phase = phase_against(psi, vacuum)
+    water, se_water = mean_and_se(phase[window(10, 110, 0, FIELD)])
+    dense, se_dense = mean_and_se(phase[window(146, 238, 0, FIELD)])
+    empty = phase[vacuum]
+    ratio = dense / water
+    se_ratio = ratio * np.hypot(se_water / water, se_dense / dense)
+    print(
+        "water %.4f +- %.4f rad, dense %.4f +- %.4f rad, ratio %.4f +- %.4f; "
+        "vacuum s.d. %.2g rad"
+        % (water, se_water, dense, se_dense, ratio, se_ratio, empty.std())
+    )
+    assert water > 10 * se_water
+    assert ratio == pytest.approx(2.0, abs=max(5 * se_ratio, 0.02))
+    assert empty.std() < 0.05 * phase[window(10, 110, 0, FIELD)].std()
+
+
+def test_a_nested_region_displaces_its_parent(tmp_path):
+    # A dense sphere inside a water slab: through the sphere the path is part
+    # water and part dense, never both
+    radius, centre = 50.0, (FIELD / 2, FIELD / 2, THICKNESS / 2)
+    psi, _ = render(
+        tmp_path / "nested",
+        doc(
+            box("slab", -FAR, 300.0),
+            dict(
+                id="ball",
+                kind="sphere",
+                material="dense",
+                parent="slab",
+                centre_A=list(centre),
+                radius_A=radius,
+            ),
+        ),
+        materials={"dense": DENSE},
+    )
+    phase = phase_against(psi, window(320, 380, 0, FIELD))
+    slab, se_slab = mean_and_se(phase[window(10, 100, 0, FIELD)])
+
+    # The disk within 30 A of the sphere's axis, and the chord through it
+    rows, cols = np.mgrid[0 : psi.shape[0], 0 : psi.shape[1]]
+    x = (cols - MARGIN) * ANGPIX
+    y = (rows - MARGIN) * ANGPIX
+    rho2 = (x - centre[0]) ** 2 + (y - centre[1]) ** 2
+    disk = rho2 < 30.0**2
+    chord = 2 * np.sqrt(np.clip(radius**2 - rho2[disk], 0, None)).mean()
+    ball, se_ball = masked_mean_and_se(phase, disk)
+
+    # Phase per A of water is slab / THICKNESS; the sphere's material has twice
+    # that, and replaces the water along the chord
+    displaced = 1 + chord / THICKNESS
+    added = 1 + 2 * chord / THICKNESS
+    measured = ball / slab
+    se = measured * np.hypot(se_ball / ball, se_slab / slab)
+    print(
+        "slab %.4f rad, ball %.4f rad (chord %.1f A): ratio %.4f +- %.4f; "
+        "displaced predicts %.4f, added %.4f"
+        % (slab, ball, chord, measured, se, displaced, added)
+    )
+    assert measured == pytest.approx(displaced, abs=max(5 * se, 0.02))
+    assert abs(measured - added) > 10 * se
+
+
+def test_cylinders_render_along_any_axis(tmp_path):
+    # A water box for reference; a cylinder along the beam (z); one across it (y)
+    zr, zc = 50.0, (200.0, 100.0)
+    yr, yx = 40.0, 300.0
+    psi, _ = render(
+        tmp_path / "cylinders",
+        doc(
+            box("ref", -FAR, 100.0),
+            dict(
+                id="along_beam",
+                kind="cylinder",
+                material="water",
+                centre_A=[zc[0], zc[1], THICKNESS / 2],
+                axis=[0, 0, 1],
+                radius_A=zr,
+                length_A=THICKNESS,
+            ),
+            dict(
+                id="across_beam",
+                kind="cylinder",
+                material="water",
+                centre_A=[yx, FIELD / 2, THICKNESS / 2],
+                axis=[0, 1, 0],
+                radius_A=yr,
+                length_A=FIELD + 2 * FAR,
+            ),
+        ),
+    )
+    phase = phase_against(psi, window(110, 145, 200, 380))
+    ref, se_ref = mean_and_se(phase[window(10, 90, 0, FIELD)])
+
+    rows, cols = np.mgrid[0 : psi.shape[0], 0 : psi.shape[1]]
+    x = (cols - MARGIN) * ANGPIX
+    y = (rows - MARGIN) * ANGPIX
+    disk = (x - zc[0]) ** 2 + (y - zc[1]) ** 2 < 30.0**2
+    along, se_along = masked_mean_and_se(phase, disk)
+
+    strip = (np.abs(x - yx) < 10.0) & (y > 20) & (y < FIELD - 20)
+    path = (2 * np.sqrt(yr**2 - (x[strip] - yx) ** 2)).mean()
+    across, se_across = masked_mean_and_se(phase, strip, b=4)
+
+    print(
+        "reference %.4f rad; along the beam %.4f (expects %.4f); across %.4f "
+        "(expects %.4f, path %.1f A)"
+        % (ref, along, ref, across, ref * path / THICKNESS, path)
+    )
+    assert along / ref == pytest.approx(1.0, abs=max(5 * se_along / ref, 0.03))
+    assert across / ref == pytest.approx(
+        path / THICKNESS, abs=max(5 * se_across / ref, 0.03)
+    )
+
+
+def test_the_same_seed_gives_the_same_regions(tmp_path):
+    regions = doc(
+        box("water", -FAR, 200.0), box("dense", 200.0, FIELD + FAR, material="dense")
+    )
+    a, _ = render(tmp_path / "a", regions, materials={"dense": DENSE})
+    b, _ = render(tmp_path / "b", regions, materials={"dense": DENSE})
+    c, _ = render(tmp_path / "c", regions, materials={"dense": DENSE}, seed=1235)
+    same = np.abs(a - b).max() / np.abs(a).max()
+    different = np.abs(a - c).max() / np.abs(a).max()
+    print("same seed %.3g, different seed %.3g relative" % (same, different))
+    assert same < 1e-4
+    assert different > 0.1
+
+
+def test_a_vacuum_region_needs_the_engine_to_support_it(tmp_path):
+    if engine_features(multem)["vacuum_regions"]:
+        pytest.skip("this engine supports vacuum regions")
+    with pytest.raises(EngineFeatureError, match="vacuum_regions"):
+        render(
+            tmp_path / "hole",
+            doc(
+                box("film", -FAR, FIELD + FAR),
+                dict(
+                    id="hole",
+                    kind="cylinder",
+                    material="vacuum",
+                    parent="film",
+                    centre_A=[FIELD / 2, FIELD / 2, THICKNESS / 2],
+                    axis=[0, 0, 1],
+                    radius_A=50.0,
+                    length_A=THICKNESS,
+                ),
+            ),
+        )
+
+
+def test_the_projected_potential_of_regions_is_refused(tmp_path):
+    # The exit wave of regions works; their projected potential does not yet
+    directory = tmp_path / "potential"
+    _, path = render(directory, doc(medium="water"))
+    with pytest.raises(NotImplementedError, match="multi-region"):
+        parakeet.simulate.potential(
+            str(path), str(directory / "sample.h5"), str(directory / "potential")
+        )

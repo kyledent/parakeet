@@ -1203,6 +1203,35 @@ class SampleHDF5Adapter(object):
             # Set the margin
             self.__handle["shape"].attrs["margin"] = shape.get("margin", (0, 0, 0))
 
+        @property
+        def regions(self):
+            """
+            Get the regions document (a JSON string), or None
+
+            """
+            if "regions" not in self.__handle:
+                return None
+            value = self.__handle["regions"][()]
+            if isinstance(value, bytes):
+                value = value.decode("utf-8")
+            return value
+
+        @regions.setter
+        def regions(self, document):
+            """
+            Set the regions document (a JSON string). The sample group is
+            marked parakeet-sample/2; a file without regions keeps the
+            original layout
+
+            """
+            if "regions" in self.__handle:
+                del self.__handle["regions"]
+            self.__handle.create_dataset(
+                "regions", data=document, dtype=h5py.string_dtype(encoding="utf-8")
+            )
+            self.__handle["regions"].attrs["schema"] = "parakeet-regions/1"
+            self.__handle.attrs["schema"] = "parakeet-sample/2"
+
     def __init__(self, filename=None, mode="r"):
         """
 
@@ -1519,6 +1548,22 @@ class Sample(object):
 
         """
         self.__handle.sample.shape = shape
+
+    @property
+    def regions(self):
+        """
+        The regions document (a parakeet-regions/1 JSON string), or None
+
+        """
+        return self.__handle.sample.regions
+
+    @regions.setter
+    def regions(self, document):
+        """
+        The regions document (a parakeet-regions/1 JSON string)
+
+        """
+        self.__handle.sample.regions = document
 
     @property
     def shape_box(self):

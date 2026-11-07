@@ -51,6 +51,13 @@ FEATURES = {
     "band_limit_spacing": lambda multem: hasattr(multem, "band_limit_spacing"),
     # A seed for the GRF ice, carried by the masker, so its field is reproducible.
     "grf_seed": lambda multem: hasattr(multem.Masker(), "set_seed"),
+    # A multi-region masker region that only subtracts: vacuum, which has no
+    # random field but must still cut its shape out of the regions below it.
+    "vacuum_regions": lambda multem: bool(
+        getattr(
+            getattr(multem, "MultiRegionMasker", None), "supports_vacuum_regions", False
+        )
+    ),
 }
 
 PIN_HINT = (
