@@ -23,6 +23,8 @@ output that flows into downstream tomography processing without hand-built metad
 | Tabulated ice spectrum | shipped (in the engine) | `IceParameters.set_spectrum_table(q, P)` replaces the ice's two-Gaussian power spectrum with a table (needs the band-limited potential); the single-ice path now also honours the `m0` and `v0` overrides |
 | Multi-region projected potential | shipped (in the engine) | `compute_projected_potential` takes a `MultiRegionMasker`; `ice_slice_statistics(ice, dx, dy, dz)` gives the (mean, sigma, band-limited mode) of one slice of a material |
 | Sphere masks on the GPU | shipped (in the engine) | A sphere region's slice mask is computed on the device like cuboids and cylinders, instead of pixel by pixel from the host; the mask is unchanged |
+| Masks on the atoms' grid | shipped (in the engine) | Region masks sample pixel corners, as the atom potential does; before, every region sat half a pixel from the atoms. Region edges move by half a pixel |
+| Partial-volume slice masks | shipped (in the engine), opt-in | `set_partial_volume(n)` on a masker weights each slice pixel by the fraction of the slice inside the region, so a region's path no longer snaps to whole slices at normal incidence; off by default |
 | [Support film](fork/support_film.md) | **not wired up** | Model and config exist; nothing reads them yet |
 | Variable per-tilt dose | not started | Native per-tilt dose in tilt-series mode |
 
