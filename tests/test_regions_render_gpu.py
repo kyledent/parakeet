@@ -294,6 +294,46 @@ def test_the_same_seed_gives_the_same_regions(tmp_path):
     assert different > 0.1
 
 
+def test_a_film_with_an_empty_hole(tmp_path):
+    # A dense film with a vacuum cylinder through it, and plain vacuum beyond
+    # x = 330 A: inside the hole the wave is the vacuum's
+    if not engine_features(multem)["vacuum_regions"]:
+        pytest.skip("this engine has no vacuum regions")
+    hole, radius = (FIELD / 2, FIELD / 2), 80.0
+    psi, _ = render(
+        tmp_path / "film",
+        doc(
+            box("film", -FAR, 330.0, material="dense"),
+            dict(
+                id="hole",
+                kind="cylinder",
+                material="vacuum",
+                parent="film",
+                centre_A=[hole[0], hole[1], THICKNESS / 2],
+                axis=[0, 0, 1],
+                radius_A=radius,
+                length_A=THICKNESS,
+            ),
+        ),
+        materials={"dense": DENSE},
+    )
+    phase = phase_against(psi, window(345, 380, 0, FIELD))
+    film, se_film = mean_and_se(phase[window(10, 90, 0, FIELD)])
+    rows, cols = np.mgrid[0 : psi.shape[0], 0 : psi.shape[1]]
+    x = (cols - MARGIN) * ANGPIX
+    y = (rows - MARGIN) * ANGPIX
+    inside = (x - hole[0]) ** 2 + (y - hole[1]) ** 2 < (radius - 20) ** 2
+    in_hole, se_hole = masked_mean_and_se(phase, inside)
+    film_sd = phase[window(10, 90, 0, FIELD)].std()
+    print(
+        "film %.4f +- %.4f rad (s.d. %.4f); hole %.5f +- %.5f rad (s.d. %.2g)"
+        % (film, se_film, film_sd, in_hole, se_hole, phase[inside].std())
+    )
+    assert film > 10 * se_film
+    assert abs(in_hole) < max(5 * se_hole, 0.01 * film)
+    assert phase[inside].std() < 0.05 * film_sd
+
+
 def test_a_vacuum_region_needs_the_engine_to_support_it(tmp_path):
     if engine_features(multem)["vacuum_regions"]:
         pytest.skip("this engine supports vacuum regions")
