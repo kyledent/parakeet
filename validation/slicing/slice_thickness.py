@@ -14,7 +14,9 @@ measures what changes, at 0 and 60 degrees of tilt, in two arms:
              hydrogen atoms that make MULTEM slice the whole slab). Each
              slicing draws a different field, so this arm compares statistics.
 
-For the molecules it reports, against the finest slicing and against 3 A:
+For the molecules it reports, against the finest slicing and against 3 A (and, by
+spatial frequency, the power of the difference image as a fraction of the
+image's own, with where that first reaches 1e-4, 1e-3 and 1e-2):
 
   * the exit wave's relative difference, |psi_s - psi_ref| / |psi_ref| (L2
     over the field);
@@ -179,6 +181,36 @@ def bin2(a):
     return a.reshape(a.shape[0] // 2, 2, a.shape[1] // 2, 2).mean(axis=(1, 3))
 
 
+# Thresholds on the relative difference spectrum: where the slicing error's power
+# reaches this fraction of the image's own power at that frequency
+RELATIVE_POWER_LEVELS = (1e-4, 1e-3, 1e-2)
+
+
+def relative_difference_spectrum(image, image_ref, nbins=64):
+    """
+    |FT(image - ref)|^2 / |FT(ref - mean)|^2, radially averaged: how much of
+    the signal at each spatial frequency the slicing changes
+
+    """
+    n = image.shape[0]
+    d = np.abs(np.fft.fft2(image - image_ref)) ** 2
+    r = np.abs(np.fft.fft2(image_ref - image_ref.mean())) ** 2
+    f = np.fft.fftfreq(n, ANGPIX)
+    q = np.hypot(*np.meshgrid(f, f, indexing="ij")).ravel()
+    edges = np.linspace(0, 0.5 / ANGPIX, nbins + 1)
+    idx = np.digitize(q, edges) - 1
+    ok = (idx >= 0) & (idx < nbins) & (q > 0)
+    num = np.bincount(idx[ok], d.ravel()[ok], minlength=nbins)
+    den = np.bincount(idx[ok], r.ravel()[ok], minlength=nbins)
+    return 0.5 * (edges[1:] + edges[:-1]), num / np.maximum(den, 1e-300)
+
+
+def first_crossing(q, ratio, level):
+    """The lowest spatial frequency (1/A) where ratio reaches level, or None"""
+    above = np.flatnonzero(ratio >= level)
+    return float(q[above[0]]) if above.size else None
+
+
 def compare(psi, image, psi_ref, image_ref):
     """Molecule-arm differences, per tilt"""
     out = []
@@ -200,6 +232,15 @@ def compare(psi, image, psi_ref, image_ref):
                 / (mean / np.sqrt(DOSE * (2 * ANGPIX) ** 2)),
             }
         )
+        q, ratio = relative_difference_spectrum(image[k], image_ref[k])
+        out[-1]["relative_difference_spectrum"] = {
+            "q": q.tolist(),
+            "ratio": ratio.tolist(),
+        }
+        out[-1]["crossings_1_over_A"] = {
+            "%g" % level: first_crossing(q, ratio, level)
+            for level in RELATIVE_POWER_LEVELS
+        }
     return out
 
 
@@ -358,6 +399,23 @@ def print_summary(r):
         )
         print("  %5g  %6.1f  | %s" % (m["slice_A"], m["exit_wave_seconds"], cells))
     print(
+        "\nmolecules: where the slicing error's power first reaches a fraction of"
+        " the image's, vs finest (as a resolution, A)"
+    )
+    for m in r["molecules"][1:]:
+        cells = "  ".join(
+            "%g deg %s"
+            % (
+                c["tilt_deg"],
+                " ".join(
+                    "%s:%s" % (lv, ("%.1f" % (1 / x)) if x else "none")
+                    for lv, x in c["crossings_1_over_A"].items()
+                ),
+            )
+            for c in m["vs_finest"]
+        )
+        print("  %5g  | %s" % (m["slice_A"], cells))
+    print(
         "\nice: slice t(s) | per tilt: ratio to finest of phase mean, phase s.d., image contrast; band power ratios"
     )
     for i in r["ice"]:
@@ -386,7 +444,7 @@ def plot(r, png):
     # off the log axis
     coarse = r["molecules"][1:]
     sc = s[1:]
-    fig, ax = plt.subplots(1, 3, figsize=(15, 4.2))
+    fig, ax = plt.subplots(1, 4, figsize=(20, 4.2))
     for k, tilt in enumerate(r["tilts_deg"]):
         ax[0].plot(
             sc,
@@ -438,6 +496,15 @@ def plot(r, png):
     ax[2].set_ylabel("exit wave, s (%d tilts)" % len(r["tilts_deg"]))
     ax[2].set_title("Time")
     ax[2].legend(fontsize=7)
+    for m in coarse:
+        sp = m["vs_finest"][0]["relative_difference_spectrum"]
+        ax[3].semilogy(sp["q"], sp["ratio"], label="%g A slices" % m["slice_A"])
+    for level in RELATIVE_POWER_LEVELS:
+        ax[3].axhline(level, color="grey", lw=0.6, ls=":")
+    ax[3].set_xlabel("q (1/A)")
+    ax[3].set_ylabel("difference power / image power")
+    ax[3].set_title("Molecules, 0 deg: slicing error by frequency", fontsize=9)
+    ax[3].legend(fontsize=7)
     fig.tight_layout()
     fig.savefig(png, dpi=130)
 
