@@ -225,9 +225,11 @@ def path_length_maps(
     (parakeet.sample._regions.owner), or the medium inside the sample shape;
     so a path is exact to about one step per boundary it crosses. The maps are
     computed on every `stride`-th pixel and interpolated (linearly) to the
-    rest, except in the cells where the rays at the four corners disagree (a
-    boundary crosses them): every pixel of those is traced, so edges keep the
-    full resolution.
+    rest, except where interpolation would lose detail, whose every pixel is
+    traced: the cells where the rays at the four corners disagree (a boundary
+    crosses them), and the pixels under any region narrower than two cells in
+    projection (which could fall between corner rays unseen). Edges and small
+    features keep the full resolution.
 
     Args:
         regions: The (medium, regions) from parakeet.sample._regions.parse
@@ -325,6 +327,30 @@ def path_length_maps(
         refine = np.zeros((gy, gx), bool)
         for j, i in zip(*np.nonzero(spread > step / 2)):
             refine[ky[j] : ky[j + 1] + 1, kx[i] : kx[i + 1] + 1] = True
+        # A region narrower than two cells can fall between all four corner
+        # rays, which then agree: trace every pixel its projection touches
+        cell = stride * pixel_size
+        for r in regs:
+            b = R.bounds(r)
+            box = np.array(
+                [
+                    [b[i][0], b[j][1], b[k][2]]
+                    for i in (0, 1)
+                    for j in (0, 1)
+                    for k in (0, 1)
+                ]
+            )
+            pl = rot.apply(box - centre) + centre - position
+            x0, y0 = pl[:, :2].min(axis=0)
+            x1, y1 = pl[:, :2].max(axis=0)
+            if min(x1 - x0, y1 - y0) < 2 * cell:
+                i0 = int(np.floor((x0 - origin[0]) / pixel_size)) + margin - 1
+                i1 = int(np.ceil((x1 - origin[0]) / pixel_size)) + margin + 1
+                j0 = int(np.floor((y0 - origin[1]) / pixel_size)) + margin - 1
+                j1 = int(np.ceil((y1 - origin[1]) / pixel_size)) + margin + 1
+                refine[
+                    max(j0, 0) : max(min(j1, gy), 0), max(i0, 0) : max(min(i1, gx), 0)
+                ] = True
         if refine.any():
             ry, rx = np.nonzero(refine)
             maps[ry, rx] = trace(rx, ry)

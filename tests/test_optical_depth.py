@@ -181,3 +181,46 @@ def test_a_coarse_stride_keeps_edges_sharp():
         "max difference, stride 8 vs 1: %.3g (film 0.1)" % np.abs(eighth - every).max()
     )
     assert np.abs(eighth - every).max() < 1e-12
+
+
+@pytest.mark.parametrize(
+    "feature",
+    [
+        dict(
+            id="vesicle",
+            kind="sphere",
+            material="dense",
+            parent="w",
+            centre_A=[214.0, 214.0, 100.0],
+            radius_A=4.0,
+        ),
+        dict(
+            id="fibre",
+            kind="cylinder",
+            material="dense",
+            parent="w",
+            centre_A=[214.0, 200.0, 100.0],
+            axis=[0, 1, 0],
+            radius_A=3.0,
+            length_A=300.0,
+        ),
+        dict(
+            id="pore",
+            kind="sphere",
+            material="vacuum",
+            parent="w",
+            centre_A=[214.0, 214.0, 100.0],
+            radius_A=4.0,
+        ),
+    ],
+    ids=["vesicle", "fibre", "pore"],
+)
+def test_a_feature_smaller_than_a_cell_is_not_missed(feature):
+    # Centred between the rays of a stride-8 grid (rays every 32 A at 4 A/px, at
+    # x = 192 and 224): the corner rays all miss it, but it is still traced
+    document = doc(slab("w", -2000, 2400, "water"), feature)
+    mfp = {"water": 1000.0, "dense": 300.0}
+    every = tau(document, mfp, stride=1)
+    eighth = tau(document, mfp, stride=8)
+    assert np.abs(every - 0.1).max() > 0.005  # the feature is there at stride 1
+    assert np.abs(eighth - every).max() < 1e-12
