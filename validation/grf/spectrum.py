@@ -27,12 +27,18 @@ radially averaged power spectra of the projected potential.
 
     validation/grf/spectrum.py --outdir /path/to/scratch
     validation/grf/spectrum.py --outdir ... --angpix 1.0 --box 400
+    validation/grf/spectrum.py --outdir ... --pack --json spectrum_packed.json
+
+--pack places the explicit water by hard-sphere packing (sample.ice.pack), so no
+two molecules overlap: random placement overlaps them, which most affects the
+high-frequency comparison near the 2.88 A water peak.
 
 Note --margin 0 is forced: the GRF slab is z-offset from the atoms by
 margin * pixel_size, so any other value compares two different places.
 """
 
 import argparse
+import os
 import json
 import subprocess
 import sys
@@ -42,7 +48,7 @@ import numpy as np
 import yaml
 
 
-def config(angpix, box, thickness, explicit_ice):
+def config(angpix, box, thickness, explicit_ice, pack=False):
     nx = int(round(box / angpix))
     return {
         "microscope": {
@@ -57,22 +63,35 @@ def config(angpix, box, thickness, explicit_ice):
                 "type": "cuboid",
                 "cuboid": {"length_x": box, "length_y": box, "length_z": thickness},
             },
-            **({"ice": {"generate": True, "density": 940.0}} if explicit_ice else {}),
+            **(
+                {"ice": {"generate": True, "density": 940.0, "pack": pack}}
+                if explicit_ice
+                else {}
+            ),
         },
         "scan": {"mode": "still", "num_images": 1},
-        "simulation": {"ice": not explicit_ice, "slice_thickness": 3.0, "margin": 0},
+        "simulation": {
+            "ice": not explicit_ice,
+            "slice_thickness": 3.0,
+            "margin": 0,
+            "allow_uncalibrated_sampling": True,
+        },
         "multiprocessing": {"device": "gpu", "nproc": 1, "gpu_id": [0]},
     }
 
 
-def project(angpix, box, thickness, explicit_ice, outdir):
+def project(angpix, box, thickness, explicit_ice, outdir, pack=False):
     """Return the projected potential summed over slices, as a 2D array."""
     tag = f"{'atomic' if explicit_ice else 'grf'}_{angpix:g}"
+    if explicit_ice and pack:
+        tag += "_packed"
     d = Path(outdir) / tag
     d.mkdir(parents=True, exist_ok=True)
     cfg, sample, pot = d / "c.yaml", d / "s.h5", d / "potential"
     cfg.write_text(
-        yaml.safe_dump(config(angpix, box, thickness, explicit_ice), sort_keys=False)
+        yaml.safe_dump(
+            config(angpix, box, thickness, explicit_ice, pack), sort_keys=False
+        )
     )
 
     for cmd in (
@@ -135,9 +154,15 @@ def main():
     ap.add_argument("--box", type=float, default=300.0)
     ap.add_argument("--thickness", type=float, default=200.0)
     ap.add_argument("--markdown", action="store_true")
+    ap.add_argument(
+        "--pack", action="store_true", help="hard-sphere packed explicit water"
+    )
+    ap.add_argument("--json", help="where to write the results (default outdir)")
     args = ap.parse_args()
 
-    atomic = project(args.angpix, args.box, args.thickness, True, args.outdir)
+    atomic = project(
+        args.angpix, args.box, args.thickness, True, args.outdir, args.pack
+    )
     grf = project(args.angpix, args.box, args.thickness, False, args.outdir)
     if atomic is None or grf is None:
         return 1
@@ -181,13 +206,16 @@ def main():
     print("  A ratio that falls with q means the spectrum shape is short of power,")
     print("  and near 1/2.88 = 0.347 1/A that points at the second Gaussian.")
 
-    out = Path(args.outdir) / "spectrum.json"
+    out = Path(args.json) if args.json else Path(args.outdir) / "spectrum.json"
     out.write_text(
         json.dumps(
             {
                 "angpix": args.angpix,
                 "box": args.box,
                 "thickness": args.thickness,
+                "packed": args.pack,
+                "band_limited": os.environ.get("MULTEM_BANDLIMITED_POTENTIAL", "1")
+                != "0",
                 "variance": {"atomic": float(atomic.var()), "grf": float(grf.var())},
                 "q": qa.tolist(),
                 "atomic_power": pa.tolist(),

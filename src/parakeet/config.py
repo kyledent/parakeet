@@ -336,6 +336,15 @@ class Ice(BaseModel):
 
     density: float = Field(940, description="The density of the ice (Kg/m3)")
 
+    pack: bool = Field(
+        False,
+        description=(
+            "Place the water molecules by hard-sphere packing, so no two "
+            "overlap, instead of uniformly at random (True/False). Slower; a "
+            "closer stand-in for real water's structure at short range"
+        ),
+    )
+
 
 class SupportFilmMaterial(str, Enum):
     """

@@ -35,12 +35,75 @@ the margin. In `z_register.py`'s geometry the last slice (248–252 Å, midpoint
 face) carries ice at margin 0 and none at margin 100, with the same z-range computed in both. The
 script reports such slices as boundary slices and does not count them against the register.
 
-## What the comparison shows
+## With the band-limited potential (the engine default)
 
-> The numbers in this section were measured before the engine band-limited the atomic potential
-> (the python-multem pin in `setup.py`). That change keeps each atom's full projected potential at
-> any pixel size, and the ice model follows it, so every value below changes; set
-> `MULTEM_BANDLIMITED_POTENTIAL=0` to reproduce them.
+Measured with the pinned engine, `MULTEM_BANDLIMITED_POTENTIAL` on, against explicit water placed
+at random and by hard-sphere packing (`--pack`, `sample.ice.pack`). The JSON is in `results/`
+(`*_2026-11-07.json`). The same run with the band-limited potential off reproduces the older
+numbers below to three or four figures (atomic mean 11.34 / 6.514 / 1.092 at 0.5 / 1 / 2 Å/px),
+so the two sets can be compared directly.
+
+### The mean no longer depends on sampling, and the GRF matches it
+
+| sampling | atomic mean, random | atomic mean, packed | GRF mean | GRF ÷ random | GRF ÷ packed |
+|---|---|---|---|---|---|
+| 0.5 Å/px | 13.60 | 13.47 | 13.68 | 1.006 | 1.016 |
+| 1.0 Å/px | 13.59 | 13.43 | 13.68 | 1.007 | 1.018 |
+| 1.5 Å/px | 13.61 | 13.44 | 13.68 | 1.005 | 1.018 |
+| 2.0 Å/px | 13.60 | 13.42 | 13.68 | 1.006 | 1.019 |
+| 2.5 Å/px | 13.60 | 13.41 | 13.68 | 1.006 | 1.020 |
+
+The steep sampling dependence below (11.3 → 1.09) belonged to MULTEM's atomic tables, and it has
+gone: each atom now keeps its whole projected potential at any pixel size. The packed box's mean
+is 1.3 % lower than the random box's. That is what the packer leaving some molecules unplaced
+would give, but the molecules were not counted in this run.
+
+### The variance is short, mostly at low frequency
+
+Per-slice variance, GRF ÷ atomic (`moments.py`):
+
+| sampling | vs random water | vs packed water |
+|---|---|---|
+| 0.5 Å/px | 0.70 | 0.87 |
+| 1.0 Å/px | 0.47 | 0.83 |
+| 1.5 Å/px | 0.21 | 0.52 |
+| 2.0 Å/px | 0.16 | 0.42 |
+| 2.5 Å/px | 0.15 | 0.41 |
+
+Projected through 200 Å (`spectrum.py`, 300 Å box), GRF ÷ atomic:
+
+| | 1.0 Å/px random | 1.0 Å/px packed | 1.5 Å/px random | 1.5 Å/px packed |
+|---|---|---|---|---|
+| variance | 0.55 | 1.05 | 0.23 | 0.61 |
+| power below 0.1 Å⁻¹ (> 10 Å) | 0.13 | 0.34 | 0.14 | 0.39 |
+| power above 0.3 Å⁻¹ (< 3.3 Å) | 2.0 | 2.0 | 4.3 | 4.5 |
+
+At 1.5 Å/px against packed water, the power ratio runs from 0.35–0.47 above 10 Å, through 0.53–0.63
+at 5–7 Å and about 1 at 4 Å, to 1.4–2.1 at 3.2–3.7 Å.
+
+- **Random placement is not a fair reference at low frequency.** Overlapping, uncorrelated molecules
+  carry ideal-gas number fluctuations, which a liquid suppresses. The random arm's power above 10 Å
+  is 2–3× the packed arm's (1.5 Å/px: 920–1,020 against 290–330).
+- **Hard-sphere packing is not a fair reference either.** An equilibrated water model gives far less
+  variance than the packed box. A molecular-dynamics reference (TIP4P/2005, liquid at 300 K and
+  quenched glasses, analysed with MULTEM's own scattering factors under the band-limited potential;
+  kept with the project's development notes) gives 0.84–1.01 × the GRF's variance per molecule at
+  1.5 Å/px, depending on the slab thickness (49 to 10 Å). The same analysis of Parakeet's packed
+  boxes gives 2.0–2.2 × the GRF, and shows why: the packer is strongly ordered, close to a lattice
+  rather than a liquid. Its first oxygen–oxygen peak g_OO is ~27 at 2.71 Å, against ~3 for liquid
+  water and ~8 for the glasses, and its low-frequency structure factor is 0.32–0.40, against
+  0.03–0.09 for water.
+- **So the shortfalls in these tables measure the explicit-water arms, not the GRF.** Against an
+  equilibrated liquid, the GRF is within about 16 % at 1.5 Å/px. The same reference shows the GRF
+  **overstating** the noise at coarse pixels in thick ice (0.70 × at 3 Å/px in 49 Å slabs), because
+  an independent field per slice cannot reproduce water's suppression of long-range fluctuations.
+
+## Before the band-limited potential (2026-08-26)
+
+> Measured before the engine band-limited the atomic potential. Set
+> `MULTEM_BANDLIMITED_POTENTIAL=0` to reproduce these numbers (they reproduce: see above). The
+> reference arm placed water at random, which inflates its low-frequency power; see the section
+> above before reading the low-frequency ratios here.
 
 ### The mean is right, including its pixel-size dependence
 
@@ -107,8 +170,9 @@ a normalisation would absorb: it is a tilt across frequency.
 
 - **Do not rescale `V0` or `Cv_var`.** A single factor cannot fix a ratio that runs from 0.07 to
   2.18 across the band; it would trade a low-frequency deficit for a worse high-frequency excess.
-- **Refit the spectrum.** `a1, a2, m1, m2, s1, s2` in `IceParameters` are the parameters that
-  control the shape, and `spectrum.py`'s atomic arm is the target to fit them to. That is a
+- **Refit the spectrum, if at all, to an equilibrated liquid, not to either explicit-water arm.**
+  `a1, a2, m1, m2, s1, s2` in `IceParameters` are the parameters that control the shape. Neither
+  `spectrum.py`'s random nor its packed arm has a liquid's structure, so neither is the target. That is a
   Parakeet-side config change, not a C++ one, so it can be tried immediately.
 - **Then re-run `moments.py`.** If the shape is right, the variance should follow without
   touching the amplitude constants.
@@ -120,7 +184,9 @@ whether the fast path reproduces the slow one — and nothing more. Whether eith
 micrograph is a separate question, and the protocol for it is in the project's development notes
 (`ICE_EXPERIMENTAL_VERIFICATION.md`, experiments V1 and V2).
 
-The explicit-water arm also uses randomly placed molecules rather than a hard-sphere-packed or
-equilibrated configuration, so its own short-range order is only as good as that placement. The
-low-frequency comparison is unaffected by this; the high-frequency comparison near 2.88 Å is the
-part to treat with most caution, and is worth repeating with `pack=True`.
+The 2026-08-26 explicit-water arm placed molecules at random. **That affects the low-frequency
+comparison as well as the high**: random placement has the number fluctuations of an ideal gas,
+which a liquid suppresses, and its power above 10 Å is 2–3× that of hard-sphere-packed water
+(`--pack`, measured 2026-11-07; section above). Packing is not a fair reference either: it carries
+about twice the variance an equilibrated water model gives. Both arms test internal consistency;
+neither is the target for the GRF's constants.

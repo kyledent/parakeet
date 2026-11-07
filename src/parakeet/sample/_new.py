@@ -413,7 +413,7 @@ def _new_Sample(config: parakeet.config.Sample, filename: str) -> Sample:
 
     # Add some ice
     if ice is not None and ice.generate:
-        add_ice(sample, centre, shape, ice.density)
+        add_ice(sample, centre, shape, ice.density, pack=ice.pack)
 
     # Add atoms from coordinates file
     if coords is not None and coords.filename is not None:

@@ -21,6 +21,14 @@ Run both at several pixel sizes and compare the slopes.
 
     validation/grf/moments.py --outdir /path/to/scratch
     validation/grf/moments.py --outdir ... --angpix 0.5 1.0 2.0
+    validation/grf/moments.py --outdir ... --pack --json moments_packed.json
+
+--pack places the explicit water by hard-sphere packing (sample.ice.pack)
+instead of uniformly at random, so no two molecules overlap: a closer stand-in
+for real water at short range, which matters most for the variance. The
+engine's band-limited potential (MULTEM_BANDLIMITED_POTENTIAL, on by default)
+is recorded in the output; set it to 0 in the environment to reproduce the
+numbers measured before it existed.
 
 Outcomes:
   atomic flat, GRF falls   -> the tables are wrong; recalibrate against the
@@ -45,7 +53,7 @@ BOX_A = 200.0
 THICKNESS_A = 200.0
 
 
-def config(angpix, explicit_ice, outdir):
+def config(angpix, explicit_ice, outdir, pack=False):
     nx = int(round(BOX_A / angpix))
     return {
         "microscope": {
@@ -65,28 +73,38 @@ def config(angpix, explicit_ice, outdir):
                 },
             },
             # explicit water molecules, the ground truth the GRF should match
-            **({"ice": {"generate": True, "density": 940.0}} if explicit_ice else {}),
+            **(
+                {"ice": {"generate": True, "density": 940.0, "pack": pack}}
+                if explicit_ice
+                else {}
+            ),
         },
         "scan": {"mode": "still", "num_images": 1},
         "simulation": {
             "ice": not explicit_ice,  # implicit GRF only in the other arm
             "slice_thickness": 3.0,
-            # The GRF slab is z-offset by margin*pixel_size while atoms are not,
-            # so a non-zero margin puts the two arms in different places.
+            # The GRF used to sit margin * pixel_size above the atoms in z; it
+            # no longer does (z_register.py), but a margin of 0 keeps both arms
+            # to the same box and costs nothing here.
             "margin": 0,
+            # This script measures the ice model where its tables run out, so
+            # the guard against that warns instead of refusing
+            "allow_uncalibrated_sampling": True,
         },
         "multiprocessing": {"device": "gpu", "nproc": 1, "gpu_id": [0]},
     }
 
 
-def measure(angpix, explicit_ice, outdir):
+def measure(angpix, explicit_ice, outdir, pack=False):
     """Mean and variance of the projected potential per unit thickness."""
     tag = f"{'atomic' if explicit_ice else 'grf'}_{angpix:g}"
+    if explicit_ice and pack:
+        tag += "_packed"
     d = Path(outdir) / tag
     d.mkdir(parents=True, exist_ok=True)
     cfg, sample, pot = d / "c.yaml", d / "s.h5", d / "potential"
     cfg.write_text(
-        yaml.safe_dump(config(angpix, explicit_ice, outdir), sort_keys=False)
+        yaml.safe_dump(config(angpix, explicit_ice, outdir, pack), sort_keys=False)
     )
 
     for cmd in (
@@ -134,13 +152,26 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--outdir", required=True)
-    ap.add_argument("--angpix", type=float, nargs="+", default=[0.5, 1.0, 2.0])
+    ap.add_argument(
+        "--angpix", type=float, nargs="+", default=[0.5, 1.0, 1.5, 2.0, 2.5]
+    )
+    ap.add_argument(
+        "--pack", action="store_true", help="hard-sphere packed explicit water"
+    )
+    ap.add_argument("--json", help="where to write the results (default outdir)")
     args = ap.parse_args()
 
-    results = {"atomic": [], "grf": []}
+    import os
+
+    results = {
+        "atomic": [],
+        "grf": [],
+        "packed": args.pack,
+        "band_limited": os.environ.get("MULTEM_BANDLIMITED_POTENTIAL", "1") != "0",
+    }
     for angpix in args.angpix:
         for explicit in (True, False):
-            r = measure(angpix, explicit, args.outdir)
+            r = measure(angpix, explicit, args.outdir, args.pack)
             if r:
                 results["atomic" if explicit else "grf"].append(r)
                 print(
@@ -148,9 +179,22 @@ def main():
                     f"mean {r['mean']:12.5g}  var {r['var']:12.5g}"
                 )
 
-    out = Path(args.outdir) / "moments.json"
+    out = Path(args.json) if args.json else Path(args.outdir) / "moments.json"
     out.write_text(json.dumps(results, indent=1))
     print(f"\n  -> {out}")
+
+    ratios = [
+        (a["angpix"], g["mean"] / a["mean"], g["var"] / a["var"])
+        for a, g in zip(results["atomic"], results["grf"])
+        if a["angpix"] == g["angpix"]
+    ]
+    results["grf_over_atomic"] = [
+        {"angpix": p, "mean": m, "var": v} for p, m, v in ratios
+    ]
+    out.write_text(json.dumps(results, indent=1))
+    print("\n  GRF / atomic:   angpix    mean     var")
+    for p, m, v in ratios:
+        print(f"                 {p:5.2f}  {m:7.4f} {v:7.4f}")
 
     for name in ("atomic", "grf"):
         rows = results[name]
