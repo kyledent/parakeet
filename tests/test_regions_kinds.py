@@ -445,3 +445,37 @@ def test_the_engine_renders_what_it_can_and_names_the_rest():
             match=r"\(%s\) cannot be rendered by the multislice engine" % what,
         ):
             R.engine_shape(one(entry))
+
+
+def test_clip_containment_allows_a_child_outside_its_parent():
+    film = dict(
+        id="film",
+        kind="box",
+        material="water",
+        centre_A=[0, 0, 0],
+        half_lengths_A=[100, 100, 10],
+    )
+    wall = dict(
+        id="wall",
+        kind="ellipsoidal_shell",
+        material="water",
+        parent="film",
+        centre_A=[0, 0, 0],
+        semi_axes_A=[60, 60, 60],
+        inner={"mode": "offset", "thickness_A": 5},
+    )
+    refuse = doc(film, wall)
+    clip = dict(doc(film, wall), containment="clip")
+    assert R.containment(refuse) == "refuse" and R.containment(clip) == "clip"
+    _, regions = R.parse(clip)
+    with pytest.raises(R.RegionsError, match="not inside its parent"):
+        R.check_nesting(regions)
+    clipped = R.check_nesting(regions, "clip")
+    assert [c[:2] for c in clipped] == [("wall", "film")]
+    assert 0.5 < clipped[0][2] < 1.0  # most of a 60 A shell lies outside a 20 A film
+    # The reference clips it: the wall's points above the film belong to nobody
+    assert list(R.owner(regions, [[0, 0, 58], [0, 58, 0], [0, 0, 0]])) == [-1, 1, 0]
+    # The setting survives the round trip, and a bad one is refused
+    assert R.containment(R.to_json(*R.parse(clip), "clip")) == "clip"
+    with pytest.raises(R.RegionsError, match="containment must be"):
+        R.parse(dict(doc(film), containment="grow"))

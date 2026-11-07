@@ -212,6 +212,7 @@ def path_length_maps(
     pixel_size,
     stride=8,
     step=2.0,
+    exact=False,
 ):
     """
     The path length (A) along the beam through each material, for every pixel
@@ -240,7 +241,12 @@ def path_length_maps(
         nx, ny, margin: The image size and margin (pixels)
         pixel_size: A
         stride: Pixels between computed rays
-        step: Sample spacing along a ray (A)
+        step: Sample spacing along a ray (A), when not exact
+        exact: Trace each ray exactly instead of sampling it: every crossing
+            of a region's or the sample shape's surface is found analytically
+            (`_regions.boundary_crossings`), and each piece between crossings
+            takes the material that owns its midpoint, so a path is exact to
+            rounding. The rule for which pixels are traced is the same
 
     Returns:
         dict: material name -> (ny + 2 margin, nx + 2 margin) array of A
@@ -280,8 +286,51 @@ def path_length_maps(
 
     materials = sorted(({r.material for r in regs} | {medium}) - {VACUUM_NAME})
 
+    beam = rot.inv().apply([0.0, 0.0, 1.0])  # the beam's direction in the sample
+
+    def material_index(points):
+        owner = R.owner(regs, points) if regs else np.full(len(points), -1)
+        index = np.full(len(points), -1)
+        for i, r in enumerate(regs):
+            if r.material != VACUUM_NAME:
+                index[owner == i] = materials.index(r.material)
+        if medium != VACUUM_NAME:
+            inside = parakeet.sample.shape_contains(points, centre, shape)
+            index[(owner < 0) & inside] = materials.index(medium)
+        return index
+
+    def trace_exact(px_x, px_y):
+        """Exact path lengths (len(px), materials), piece by piece along each ray"""
+        sx = origin[0] + (np.asarray(px_x) - margin) * pixel_size
+        sy = origin[1] + (np.asarray(px_y) - margin) * pixel_size
+        lab0 = np.stack([sx, sy, np.zeros(len(sx))], axis=1)
+        p0 = rot.inv().apply(lab0 + position - centre) + centre  # where t = lab z = 0
+        cuts = [parakeet.sample.shape_crossings(p0, beam, centre, shape)]
+        cuts += [R.boundary_crossings(r, p0, beam) for r in regs]
+        t = np.concatenate(
+            [np.full((len(p0), 1), z[0]), np.full((len(p0), 1), z[-1])] + cuts, axis=1
+        )
+        t = np.where(np.isfinite(t), np.clip(t, z[0], z[-1]), z[-1])
+        t.sort(axis=1)
+        mid = 0.5 * (t[:, 1:] + t[:, :-1])
+        length = np.diff(t, axis=1)
+        pts = p0[:, None, :] + mid[..., None] * beam
+        index = material_index(pts.reshape(-1, 3)).reshape(mid.shape)
+        out = np.zeros((len(p0), len(materials)))
+        for m in range(len(materials)):
+            out[:, m] = np.where(index == m, length, 0.0).sum(axis=1)
+        return out
+
     def trace(px_x, px_y):
         """Path lengths (len(px), materials) for rays through pixels (k_x, k_y)"""
+        if exact:
+            out = np.zeros((len(px_x), len(materials)))
+            for start in range(0, len(px_x), 2048):
+                out[start : start + 2048] = trace_exact(
+                    np.asarray(px_x)[start : start + 2048],
+                    np.asarray(px_y)[start : start + 2048],
+                )
+            return out
         out = np.zeros((len(px_x), len(materials)))
         for start in range(0, len(px_x), 4096):
             sx = origin[0] + (px_x[start : start + 4096] - margin) * pixel_size
@@ -326,7 +375,7 @@ def path_length_maps(
         )
         spread = (corners.max(axis=0) - corners.min(axis=0)).max(axis=-1)
         refine = np.zeros((gy, gx), bool)
-        for j, i in zip(*np.nonzero(spread > step / 2)):
+        for j, i in zip(*np.nonzero(spread > (1e-9 if exact else step / 2))):
             refine[ky[j] : ky[j + 1] + 1, kx[i] : kx[i + 1] + 1] = True
         # A region thinner than two cells, in projection or in any direction
         # (a fibre lying diagonally, a thin wall), can fall between all four

@@ -252,6 +252,53 @@ def shape_bounding_box(centre, shape):
     return (x0 + offset, x1 + offset)
 
 
+def shape_crossings(p0, d, centre, shape):
+    """
+    Every t at which the rays p0 + t d cross a surface of the sample shape (the
+    faces of a cube or cuboid; the caps and the side of a cylinder along y), as
+    shape_contains draws it. NaN where a surface is not met
+
+    Args:
+        p0 (array): The rays' starting points, (n, 3), A
+        d (array): The rays' common unit direction, (3,)
+        centre (array): The centre of the shape (x, y, z), A
+        shape (dict): The shape, as in the sample configuration
+
+    Returns:
+        array: (n, k) values of t
+
+    """
+    p0 = np.asarray(p0, dtype=float).reshape(-1, 3)
+    d = np.asarray(d, dtype=float)
+    centre = np.asarray(centre, dtype=float)
+    x0, x1 = shape_bounding_box(centre, shape)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if shape["type"] in ("cube", "cuboid"):
+            t = np.concatenate(
+                [(np.asarray(x0) - p0) / d, (np.asarray(x1) - p0) / d], axis=1
+            )
+            t[:, np.concatenate([np.abs(d) < 1e-15] * 2)] = np.nan
+            return t
+        # A cylinder along y: caps at y0 and y1, and the side about (cx, cz)
+        caps = np.stack([(x0[1] - p0[:, 1]) / d[1], (x1[1] - p0[:, 1]) / d[1]], axis=1)
+        if abs(d[1]) < 1e-15:
+            caps[:] = np.nan
+        radius = float(np.mean(shape["cylinder"]["radius"]))
+        u = np.stack([p0[:, 0] - centre[0], p0[:, 2] - centre[2]], axis=1) / radius
+        v = np.array([d[0], d[2]]) / radius
+        a = v @ v
+        b = 2 * (u @ v)
+        c = np.einsum("ij,ij->i", u, u) - 1
+        disc = b * b - 4 * a * c
+        root = np.sqrt(np.where(disc >= 0, disc, np.nan))
+        side = (
+            np.stack([(-b - root) / (2 * a), (-b + root) / (2 * a)], axis=1)
+            if a > 1e-30
+            else np.full((len(p0), 2), np.nan)
+        )
+        return np.concatenate([caps, side], axis=1)
+
+
 def shape_contains(coords, centre, shape):
     """
     Which points lie inside the sample shape

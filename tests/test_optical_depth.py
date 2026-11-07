@@ -249,3 +249,136 @@ def test_a_thin_fibre_across_the_field_is_not_missed():
         % np.abs(eighth - every).max()
     )
     assert np.abs(eighth - every).max() < 1e-12
+
+
+def paths(document, orientation=(0, 0, 0), stride=1, exact=True, step=0.5):
+    return I.path_length_maps(
+        R.parse(document),
+        SHAPE,
+        CENTRE,
+        orientation,
+        (0, 0, 0),
+        (0, 0),
+        N,
+        N,
+        0,
+        PX,
+        stride=stride,
+        step=step,
+        exact=exact,
+    )
+
+
+def test_exact_paths_through_a_sphere_are_its_chords():
+    ball = dict(
+        id="b",
+        kind="sphere",
+        material="dense",
+        centre_A=[201.3, 198.7, 100.0],
+        radius_A=77.0,
+    )
+    L = paths(doc(ball))["dense"]
+    x = np.arange(N) * PX
+    rho2 = (x[None, :] - 201.3) ** 2 + (x[:, None] - 198.7) ** 2
+    chord = 2 * np.sqrt(np.clip(77.0**2 - rho2, 0, None))
+    assert np.abs(L - chord).max() < 1e-9
+
+
+def test_exact_paths_through_a_tilted_slab_and_a_nested_sphere():
+    document = doc(
+        slab("w", -5000, 5000, "water"),
+        dict(
+            id="b",
+            kind="sphere",
+            material="dense",
+            parent="w",
+            centre_A=[200, 200, 100],
+            radius_A=40,
+        ),
+    )
+    L = paths(document)
+    x = np.arange(N) * PX
+    rho2 = (x[None, :] - 200) ** 2 + (x[:, None] - 200) ** 2
+    chord = 2 * np.sqrt(np.clip(40.0**2 - rho2, 0, None))
+    assert np.abs(L["dense"] - chord).max() < 1e-9
+    assert np.abs(L["water"] + L["dense"] - 100).max() < 1e-9
+    tilted = paths(
+        doc(slab("w", -5000, 5000, "water")), orientation=(0, np.radians(60), 0)
+    )
+    assert np.abs(tilted["water"][10:-10, 10:-10] - 200).max() < 1e-9
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        dict(
+            id="e",
+            kind="ellipsoid",
+            material="dense",
+            parent="w",
+            centre_A=[200, 200, 100],
+            semi_axes_A=[90, 50, 40],
+            axes=[
+                [np.cos(0.4), -np.sin(0.4), 0],
+                [np.sin(0.4), np.cos(0.4), 0],
+                [0, 0, 1],
+            ],
+            cuts=[{"normal": [1, 0.3, 0.2], "offset_A": 30}],
+        ),
+        dict(
+            id="s",
+            kind="ellipsoidal_shell",
+            material="dense",
+            parent="w",
+            centre_A=[200, 200, 100],
+            semi_axes_A=[90, 60, 45],
+            inner={"mode": "offset", "thickness_A": 8},
+        ),
+        dict(
+            id="t",
+            kind="slab",
+            material="dense",
+            parent="w",
+            origin_A=[200, 200, 100],
+            normal=[0.2, 0.1, 1],
+            u_axis=[1, 0, 0],
+            thickness_A=30,
+            footprint={
+                "kind": "disc",
+                "centre_uv_A": [10, -5],
+                "radius_A": 90,
+                "clips": [{"normal_uv": [1, 1], "offset_A": 40}],
+            },
+        ),
+    ],
+    ids=["ellipsoid_cut", "shell", "slab_disc_clip"],
+)
+def test_exact_paths_agree_with_fine_sampling(entry):
+    document = doc(slab("w", -5000, 5000, "water", z0=0, z1=200), entry)
+    exact = paths(document, orientation=(0, np.radians(35), 0))
+    fine = paths(document, orientation=(0, np.radians(35), 0), exact=False, step=0.05)
+    for m in exact:
+        # Sampling is good to about one step per boundary crossed
+        assert np.abs(exact[m] - fine[m]).max() < 0.05 * 6
+    assert (
+        np.abs(exact["water"] + exact["dense"] - 200 / np.cos(np.radians(35))).max()
+        < 1e-9
+    )
+
+
+def test_an_exact_coarse_map_equals_the_exact_full_one():
+    document = doc(
+        slab("w", -5000, 5000, "water"),
+        dict(
+            id="b",
+            kind="sphere",
+            material="dense",
+            parent="w",
+            centre_A=[203, 197, 100],
+            radius_A=60,
+        ),
+    )
+    full = paths(document, stride=1)
+    coarse = paths(document, stride=8)
+    for m in full:
+        assert np.abs(full[m] - coarse[m]).max() < 1e-9

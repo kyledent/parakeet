@@ -327,7 +327,12 @@ def regions_document(config: parakeet.config.SampleRegions) -> str:
         config.file if config.file is not None else config.document
     )
     medium, regions = parakeet.sample._regions.parse(document)
-    parakeet.sample._regions.check_nesting(regions)
+    mode = parakeet.sample._regions.containment(document)
+    for child, parent, outside in parakeet.sample._regions.check_nesting(regions, mode):
+        logger.warning(
+            "Region %r is clipped to its parent %r (%.1f%% of it lies outside)"
+            % (child, parent, 100 * outside)
+        )
     logger.info(
         "Regions: %d, medium %s; materials %s"
         % (
@@ -336,7 +341,7 @@ def regions_document(config: parakeet.config.SampleRegions) -> str:
             parakeet.sample._regions.materials_used(medium, regions),
         )
     )
-    return parakeet.sample._regions.to_json(medium, regions)
+    return parakeet.sample._regions.to_json(medium, regions, mode)
 
 
 @singledispatch

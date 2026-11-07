@@ -66,6 +66,9 @@ point, with nothing added from the others. The ``medium`` fills
 ``sample.shape`` wherever no region owns a point, and ``"vacuum"`` there means
 nothing does. Every point of the specimen therefore has exactly one material.
 
+A document may set ``"containment": "clip"``: then a child that pokes out of
+its parent is clipped to it rather than refused (see `containment`).
+
 `owner()` is the reference for this, on the CPU. The multislice path paints
 the same partition by giving each region the shapes of every region that
 outranks it to subtract. That is exact only when each child lies inside its
@@ -374,6 +377,7 @@ def parse(document, materials=None):
     if materials is not None:
         allowed = set(materials) | {WATER, VACUUM}
 
+    containment(document)  # checks the rule's name
     medium = document.get("medium", WATER)
     if allowed is not None and medium not in allowed:
         raise RegionsError("The medium %r is not a known material" % medium)
@@ -510,6 +514,126 @@ def contains(region, points):
         return outer & ~_ellipsoid_body(
             p, g["centre_A"], g["axes"], a_in, g["cuts"], g["cut_offset_A"]
         )
+    raise RegionsError("Unknown kind %r" % region.kind)
+
+
+def _plane_crossings(p0, d, normals, offsets):
+    """t where p0 + t d meets each plane n . x = b (NaN where parallel)"""
+    nd = np.asarray(normals) @ d
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = (np.asarray(offsets)[None, :] - p0 @ np.asarray(normals).T) / nd
+    t[:, np.abs(nd) < 1e-15] = np.nan
+    return t
+
+
+def _quadric_crossings(u, v):
+    """t where |u + t v|^2 = 1, per row of u (v shared); NaN where it misses"""
+    a = v @ v
+    b = 2 * (u @ v)
+    c = np.einsum("ij,ij->i", u, u) - 1
+    disc = b * b - 4 * a * c
+    root = np.sqrt(np.where(disc >= 0, disc, np.nan))
+    if a < 1e-30:
+        return np.full((len(u), 2), np.nan)
+    return np.stack([(-b - root) / (2 * a), (-b + root) / (2 * a)], axis=1)
+
+
+def _ellipsoid_crossings(p0, d, centre, R, a, cuts, cut_shift=0.0):
+    w = p0 - centre
+    t = [_quadric_crossings((w @ R) / a, (d @ R) / a)]
+    if cuts:
+        normals = np.array([c["normal"] for c in cuts])
+        offsets = np.array([c["offset_A"] - cut_shift for c in cuts]) + normals @ centre
+        t.append(_plane_crossings(p0, d, normals, offsets))
+    return np.concatenate(t, axis=1)
+
+
+def boundary_crossings(region, p0, d):
+    """
+    Every t at which the rays p0 + t d (p0 (N, 3), d (3,) unit) cross a surface
+    of the region's shape. Between consecutive crossings a ray is either inside
+    the shape throughout or outside throughout, so these, with `contains` at
+    one point per piece, give exact path lengths. Some crossings may lie where
+    the ray is outside the shape anyway; they only split a piece in two.
+
+    Returns:
+        An (N, k) array of t, NaN where a surface is not met
+
+    """
+    p0 = np.asarray(p0, dtype="float64").reshape(-1, 3)
+    d = np.asarray(d, dtype="float64")
+    g = region.geometry
+    if region.kind == "box":
+        R, h, c = g["axes"], g["half_lengths_A"], g["centre_A"]
+        normals = np.concatenate([R.T, R.T])
+        offsets = np.concatenate([R.T @ c + h, R.T @ c - h])
+        return _plane_crossings(p0, d, normals, offsets)
+    if region.kind == "sphere":
+        return _quadric_crossings(
+            (p0 - g["centre_A"]) / g["radius_A"], d / g["radius_A"]
+        )
+    if region.kind == "cylinder":
+        a, c, r, L = g["axis"], g["centre_A"], g["radius_A"], g["length_A"]
+        caps = _plane_crossings(
+            p0, d, np.array([a, a]), np.array([a @ c + L / 2, a @ c - L / 2])
+        )
+        w = p0 - c
+        u = (w - np.outer(w @ a, a)) / r
+        v = (d - (d @ a) * a) / r
+        return np.concatenate([caps, _quadric_crossings(u, v)], axis=1)
+    if region.kind in ("ellipsoid", "ellipsoidal_shell"):
+        out = _ellipsoid_crossings(
+            p0, d, g["centre_A"], g["axes"], g["semi_axes_A"], g["cuts"]
+        )
+        if region.kind == "ellipsoid":
+            return out
+        inner = g["inner"]
+        a_in = (
+            g["semi_axes_A"] * inner["factor"]
+            if inner["mode"] == "scale"
+            else g["semi_axes_A"] - inner["thickness_A"]
+        )
+        return np.concatenate(
+            [
+                out,
+                _ellipsoid_crossings(
+                    p0, d, g["centre_A"], g["axes"], a_in, g["cuts"], g["cut_offset_A"]
+                ),
+            ],
+            axis=1,
+        )
+    if region.kind == "slab":
+        o, n, u_ax, v_ax, t = (
+            g["origin_A"],
+            g["normal"],
+            g["u_axis"],
+            g["v_axis"],
+            g["thickness_A"],
+        )
+        planes = [(n, n @ o + t / 2), (n, n @ o - t / 2)]
+        fp = g["footprint"]
+        if fp["kind"] == "rectangle":
+            for ax, half in ((u_ax, fp["half_u_A"]), (v_ax, fp["half_v_A"])):
+                planes += [(ax, ax @ o + half), (ax, ax @ o - half)]
+        for c in fp["clips"]:
+            m = c["normal_uv"][0] * u_ax + c["normal_uv"][1] * v_ax
+            planes.append((m, c["offset_A"] + m @ o))
+        out = [
+            _plane_crossings(
+                p0,
+                d,
+                np.array([q[0] for q in planes]),
+                np.array([q[1] for q in planes]),
+            )
+        ]
+        if fp["kind"] == "disc":
+            cu, cv = fp["centre_uv_A"]
+            r = fp["radius_A"]
+            w = p0 - o
+            uv = np.stack([w @ u_ax - cu, w @ v_ax - cv], axis=1) / r
+            duv = np.array([d @ u_ax, d @ v_ax]) / r
+            out.append(_quadric_crossings(uv, duv))
+        return np.concatenate(out, axis=1)
     raise RegionsError("Unknown kind %r" % region.kind)
 
 
@@ -701,22 +825,68 @@ def nested(child, parent):
     return bool(np.all(_inside_eroded(parent, points, margin)))
 
 
-def check_nesting(regions):
+CONTAINMENT = ("refuse", "clip")
+
+
+def containment(document):
     """
-    Refuse a child whose shape pokes out of its parent's
+    The document's containment rule: "refuse" (the default) or "clip"
+
+    With "refuse", a child whose shape pokes out of its parent's is an error.
+    With "clip", it is allowed and clipped to its parent, as `owner()` and the
+    path-length maps always do (a point is in a region only if it is also in
+    the region's parent); only the multislice renderer, whose paint plan cannot
+    clip, still refuses such a child until the engine has a label raster.
+
+    """
+    document = load(document)
+    mode = document.get("containment", "refuse")
+    if mode not in CONTAINMENT:
+        raise RegionsError(
+            "containment must be one of %s, not %r" % (CONTAINMENT, mode)
+        )
+    return mode
+
+
+def outside_fraction(child, parent):
+    """The fraction of a child's volume outside its parent (sampled, as in nesting)"""
+    lo, hi = bounds(child)
+    rng = np.random.default_rng(0)
+    p = lo + (hi - lo) * rng.random((NESTING_SAMPLES, 3))
+    p = p[contains(child, p)]
+    return float(np.mean(~contains(parent, p))) if len(p) else 0.0
+
+
+def check_nesting(regions, mode="refuse"):
+    """
+    Check that every child lies inside its parent
+
+    Args:
+        regions: The list of Region
+        mode: "refuse" raises for the first child outside its parent; "clip"
+            allows it, and returns what is clipped
+
+    Returns:
+        list: (child id, parent id, fraction outside) for each child outside
+        its parent (only with "clip"; "refuse" raises instead)
 
     Raises:
-        RegionsError: Naming the first such child
+        RegionsError: Naming the first such child, with "refuse"
 
     """
     by_id = {r.id: r for r in regions}
+    clipped = []
     for r in regions:
         if r.parent is not None and not nested(r, by_id[r.parent]):
+            if mode == "clip":
+                clipped.append((r.id, r.parent, outside_fraction(r, by_id[r.parent])))
+                continue
             raise RegionsError(
                 "Region %r is not inside its parent %r. Clipping a child to its "
                 "parent is not supported yet: make the child's shape fit "
                 "inside the parent's" % (r.id, r.parent)
             )
+    return clipped
 
 
 def paint_plan(regions):
@@ -745,7 +915,7 @@ def _jsonable(value):
     return value
 
 
-def to_json(medium, regions):
+def to_json(medium, regions, containment="refuse"):
     """
     Write the document back (normalised: unit vectors, defaults filled)
 
@@ -764,7 +934,10 @@ def to_json(medium, regions):
                 continue  # derived from normal and u_axis
             entry[key] = _jsonable(value)
         out.append(entry)
-    return json.dumps({"schema": SCHEMA, "medium": medium, "regions": out})
+    doc = {"schema": SCHEMA, "medium": medium, "regions": out}
+    if containment != "refuse":
+        doc["containment"] = containment
+    return json.dumps(doc)
 
 
 def engine_shape(region):
