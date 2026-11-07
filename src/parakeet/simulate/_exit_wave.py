@@ -150,16 +150,13 @@ class ExitWaveImageSimulator(object):
         simulate.input.theta += beam_tilt_theta
         simulate.input.phi += beam_tilt_phi
 
-        # Compute the B factor
+        # Compute the B factor from the dose received by the end of this frame:
+        # the sum over the frames up to and including it, since with a dose per
+        # image the frames do not all receive the same
         if self.simulation["radiation_damage_model"]:
+            cumulative_dose = float(self.scan.cumulative_dose[index])
             simulate.input.static_B_factor = (
-                8
-                * pi**2
-                * (
-                    self.simulation["sensitivity_coefficient"]
-                    * electrons_per_angstrom
-                    * (index + 1)
-                )
+                8 * pi**2 * self.simulation["sensitivity_coefficient"] * cumulative_dose
             )
         else:
             simulate.input.static_B_factor = 0

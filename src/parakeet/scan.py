@@ -10,7 +10,7 @@
 #
 import numpy as np
 import pandas as pd
-from typing import Union
+from typing import Sequence, Union
 from scipy.stats import special_ortho_group
 from scipy.spatial.transform import Rotation as R
 
@@ -157,6 +157,14 @@ class Scan(object):
 
         """
         return self.data["electrons_per_angstrom"]
+
+    @property
+    def cumulative_dose(self) -> np.ndarray:
+        """
+        Get the dose received by the end of each frame, in scan order
+
+        """
+        return np.cumsum(np.asarray(self.electrons_per_angstrom, dtype="float64"))
 
     @property
     def exposure_time(self) -> np.ndarray:
@@ -820,6 +828,7 @@ def new(
     phi: np.ndarray = None,
     drift: dict = None,
     electrons_per_angstrom: float = 40,
+    dose_per_image: Sequence[float] = None,
 ) -> Scan:
     """
     Create an scan
@@ -845,6 +854,9 @@ def new(
         phi: The beam tilt phi angle
         drift: The beam drift model
         electrons_per_angstrom: The number of electrons per angstrom (per image)
+        dose_per_image: The dose of each image (electrons per A^2, across all
+            its fractions), in image number order, which is the order the
+            images are taken. Overrides electrons_per_angstrom when given
 
     Returns:
         The scan object
@@ -868,4 +880,33 @@ def new(
         "drift": drift,
         "electrons_per_angstrom": electrons_per_angstrom,
     }
-    return ScanFactory.make_scan(mode, **kwargs)
+    scan = ScanFactory.make_scan(mode, **kwargs)
+    if dose_per_image is not None:
+        set_dose_per_image(scan, dose_per_image)
+    return scan
+
+
+def set_dose_per_image(scan: Scan, dose_per_image: Sequence[float]):
+    """
+    Give each image of a scan its own dose, split evenly over its fractions
+
+    Args:
+        scan: The scan, modified in place
+        dose_per_image: One dose per image (electrons per A^2), indexed by
+            image number
+
+    """
+    dose = np.asarray(dose_per_image, dtype="float64")
+    image_number = np.asarray(scan.image_number, dtype=int)
+    num_images = len(np.unique(image_number))
+    if dose.ndim != 1 or len(dose) != num_images:
+        raise ValueError(
+            "dose_per_image has %d values but the scan has %d images"
+            % (dose.size, num_images)
+        )
+    if np.any(dose < 0) or not np.all(np.isfinite(dose)):
+        raise ValueError("dose_per_image must be finite and non-negative")
+    if image_number.min() < 0 or image_number.max() >= num_images:
+        raise ValueError("The scan's image numbers are not 0 .. %d" % (num_images - 1))
+    fractions = np.bincount(image_number, minlength=num_images)
+    scan.data["electrons_per_angstrom"] = dose[image_number] / fractions[image_number]

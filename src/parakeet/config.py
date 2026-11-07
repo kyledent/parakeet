@@ -795,6 +795,17 @@ class Scan(BaseModel):
 
     drift: Optional[Drift] = Field(None, description="The drift model parameters")
 
+    dose_per_image: Optional[List[float]] = Field(
+        None,
+        description=(
+            "The dose of each image (electrons per A^2, across all its "
+            "fractions), one per image in image number order, which is the "
+            "order the images are taken (for dose_symmetric, sorted by "
+            "|angle|). Overrides microscope.beam.electrons_per_angstrom. "
+            "The radiation damage model then uses the cumulative dose"
+        ),
+    )
+
 
 class InelasticModel(str, Enum):
     """
