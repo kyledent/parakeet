@@ -27,6 +27,7 @@ def fake_engine(
     seed=True,
     vacuum=True,
     table=True,
+    potential=True,
 ):
     class Masker:
         pass
@@ -57,6 +58,17 @@ def fake_engine(
         module.band_limited_potential = lambda: True
     if spacing:
         module.band_limit_spacing = lambda x, y: 1.0
+    if potential:
+
+        def compute_projected_potential(*args):
+            pass
+
+        compute_projected_potential.__doc__ = (
+            "1. compute_projected_potential(arg0, arg1, arg2: Masker, arg3)\n"
+            "2. compute_projected_potential(arg0, arg1, arg2: MultiRegionMasker, arg3)"
+        )
+        module.compute_projected_potential = compute_projected_potential
+        module.ice_slice_statistics = lambda ice, dx, dy, dz: (0.0, 1.0, True)
     module.Masker = Masker
     return module
 
@@ -74,6 +86,7 @@ def test_an_old_engine_is_refused_by_name():
         seed=False,
         vacuum=False,
         table=False,
+        potential=False,
     )
     assert not any(engine_features(old).values())
     with pytest.raises(EngineFeatureError) as error:

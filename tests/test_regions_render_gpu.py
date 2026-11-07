@@ -17,6 +17,7 @@ import yaml
 import parakeet.io
 import parakeet.sample
 import parakeet.simulate
+import parakeet.simulate.engine
 from parakeet.engine_check import EngineFeatureError, engine_features, import_multem
 
 multem = import_multem()
@@ -421,11 +422,63 @@ def test_a_vacuum_region_needs_the_engine_to_support_it(tmp_path):
         )
 
 
-def test_the_projected_potential_of_regions_is_refused(tmp_path):
-    # The exit wave of regions works; their projected potential does not yet
-    directory = tmp_path / "potential"
-    _, path = render(directory, doc(medium="water"))
-    with pytest.raises(NotImplementedError, match="multi-region"):
-        parakeet.simulate.potential(
-            str(path), str(directory / "sample.h5"), str(directory / "potential")
+def potential_of(directory, regions, materials=None):
+    """The projected potential volume (slices, ny, nx) of render()'s sample"""
+    _, path = render(directory, regions, materials=materials)
+    parakeet.simulate.potential(
+        str(path), str(directory / "sample.h5"), str(directory / "potential")
+    )
+    import mrcfile
+
+    with mrcfile.open(str(directory / "potential_0.mrc")) as m:
+        return np.asarray(m.data, dtype=np.float64)
+
+
+def test_the_projected_potential_of_regions_needs_the_engine(tmp_path):
+    if engine_features(multem)["multi_region_potential"]:
+        pytest.skip("this engine has a multi-region projected potential")
+    with pytest.raises(EngineFeatureError, match="multi_region_potential"):
+        potential_of(tmp_path / "potential", doc(medium="water"))
+
+
+def test_the_projected_potential_of_regions(tmp_path):
+    # A dense square (twice water's molecules) in the middle of a water slab:
+    # each slice's mean potential is the engine's own per-slice mean for its
+    # material (multem.ice_slice_statistics), and nothing adds where they meet
+    if not engine_features(multem)["multi_region_potential"]:
+        pytest.skip("this engine has no multi-region projected potential")
+    lo, hi = FIELD / 4, 3 * FIELD / 4
+    volume = potential_of(
+        tmp_path / "potential",
+        doc(
+            box("slab", -FAR, FIELD + FAR),
+            box("square", lo, hi, material="dense", y0=lo, y1=hi, parent="slab"),
+        ),
+        materials={"dense": DENSE},
+    )
+    dz = 3.0  # the default slice thickness
+    inside = slice(1, int(THICKNESS / dz) - 1)  # slices wholly inside the slab
+    n = volume.shape[-1]
+    ix = (np.arange(n) + 0.5) * ANGPIX
+
+    def region(a, b):
+        sel = (ix > a) & (ix < b)
+        return np.ix_(sel, sel)
+
+    centre = region(lo + 20, hi - 20)
+    corner = region(0, lo - 20)
+    expected = {
+        name: multem.ice_slice_statistics(
+            parakeet.simulate.engine.grf_parameters(m), ANGPIX, ANGPIX, dz
+        )[0]
+        for name, m in (("water", {"density": WATER_DENSITY}), ("dense", DENSE))
+    }
+    for name, window_ in (("water", corner), ("dense", centre)):
+        per_slice = np.array([v[window_].mean() for v in volume[inside]])
+        mean = per_slice.mean()
+        se = per_slice.std(ddof=1) / np.sqrt(per_slice.size)
+        print(
+            "%s: slice mean %.5g +- %.2g, engine %.5g (%d slices)"
+            % (name, mean, se, expected[name], per_slice.size)
         )
+        assert mean == pytest.approx(expected[name], rel=0.01, abs=5 * se)

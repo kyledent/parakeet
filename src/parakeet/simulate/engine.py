@@ -654,13 +654,9 @@ class SimulationEngine(object):
         Simulate the potential
 
         """
-        # The engine's projected potential takes one ice region, not several
+        # Several regions of material need the engine's multi-region overload
         if isinstance(masker, getattr(multem, "MultiRegionMasker", ())):
-            raise NotImplementedError(
-                "The projected potential of a sample with regions of material "
-                "needs a multi-region compute_projected_potential, which the "
-                "engine does not have yet; simulate the exit wave instead"
-            )
+            require_engine_features("multi_region_potential", multem=multem)
 
         # Set the incident wave
         self.input.iw_x = [self.input.spec_lx / 2]

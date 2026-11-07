@@ -60,6 +60,13 @@ FEATURES = {
             getattr(multem, "MultiRegionMasker", None), "supports_vacuum_regions", False
         )
     ),
+    # The projected potential of several regions of material: an overload of
+    # compute_projected_potential that takes a MultiRegionMasker (it came with
+    # ice_slice_statistics, the engine's own per-slice mean and sigma)
+    "multi_region_potential": lambda multem: (
+        hasattr(multem, "ice_slice_statistics")
+        and "MultiRegionMasker" in (multem.compute_projected_potential.__doc__ or "")
+    ),
 }
 
 PIN_HINT = (

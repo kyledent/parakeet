@@ -33,6 +33,7 @@ output that flows into downstream tomography processing without hand-built metad
 | Vacuum regions | shipped (in the engine) | A multi-region masker region with density 0 adds nothing but can still be subtracted by other regions, for holes and cracks (`MultiRegionMasker.supports_vacuum_regions`) |
 | Tabulated ice spectrum | shipped (in the engine) | `IceParameters.set_spectrum_table(q, P)` replaces the ice's two-Gaussian power spectrum with a table (needs the band-limited potential); the single-ice path now also honours the `m0` and `v0` overrides |
 | Multi-region projected potential | shipped (in the engine) | `compute_projected_potential` takes a `MultiRegionMasker`; `ice_slice_statistics(ice, dx, dy, dz)` gives the (mean, sigma, band-limited mode) of one slice of a material |
+| Projected potential of regions | shipped | `parakeet.simulate.potential` simulates a sample with `sample.regions` through that overload, slice by slice as the exit wave is; it needs the engine feature `multi_region_potential` (`tools/check_engine.py`) and refuses by name without it |
 | [Support film](fork/support_film.md) | **not wired up** | Model and config exist; nothing reads them yet |
 
 Proposals for unbuilt work, and the research behind these changes, are kept with the project's
