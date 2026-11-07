@@ -959,6 +959,37 @@ class IceParameters(BaseModel):
         ),
     )
 
+    preset: Optional[Literal["vitreous_ice_md", "liquid_water_md"]] = Field(
+        None,
+        description=(
+            "A tabulated spectrum shipped with Parakeet (parakeet/data/ice_spectra, "
+            "see PROVENANCE.md there): vitreous_ice_md or liquid_water_md. It sets "
+            "spectrum_table, and variance_constant unless one is given. None (the "
+            "default) keeps the two Gaussians"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _apply_preset(self):
+        if self.preset is None:
+            return self
+        import json
+
+        from parakeet.data import ice_spectrum_path
+
+        with open(ice_spectrum_path(self.preset)) as f:
+            table = json.load(f)
+        q, P = [float(v) for v in table["q"]], [float(v) for v in table["P"]]
+        # A config written out after loading carries the preset's own table:
+        # that is the same thing said twice, not a second spectrum
+        given = self.spectrum_table
+        if given is not None and (given.q != q or given.P != P):
+            raise ValueError("ice parameters: give a preset or a spectrum_table, not both")
+        self.spectrum_table = SpectrumTable(q=q, P=P)
+        if self.variance_constant is None:
+            self.variance_constant = float(table["V0"])
+        return self
+
 
 class Material(IceParameters):
     """

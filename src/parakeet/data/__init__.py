@@ -170,3 +170,11 @@ def get_6qt9():
 
     """
     return get_path("6qt9.cif")
+
+
+def ice_spectrum_path(name):
+    """
+    The path of a shipped ice spectrum preset (parakeet/data/ice_spectra)
+
+    """
+    return os.path.join(os.path.dirname(__file__), "ice_spectra", name + ".json")
