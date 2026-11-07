@@ -34,6 +34,54 @@ __all__ = ["image"]
 logger = logging.getLogger(__name__)
 
 
+def output_binning(simulation, nx, ny):
+    """
+    The output binning factor, checked against the detector
+
+    Args:
+        simulation: The simulation parameters (a dict), or None
+        nx, ny: The detector size in pixels
+
+    Returns:
+        int: The binning factor (1 for none)
+
+    """
+    factor = int((simulation or {}).get("output_binning", 1) or 1)
+    if factor < 1:
+        raise ValueError("output_binning must be at least 1, not %d" % factor)
+    if nx % factor or ny % factor:
+        raise ValueError(
+            "output_binning %d does not divide the detector (%d x %d pixels); "
+            "detector.nx and detector.ny must be multiples of it" % (factor, nx, ny)
+        )
+    return factor
+
+
+def bin_mean(image, factor):
+    """
+    Average blocks of factor x factor pixels
+
+    The image is an intensity, a flux per unit area, so a bigger pixel sees the
+    mean of the smaller ones it covers; its dose is set separately.
+
+    Args:
+        image (array): A 2D image whose sides are multiples of factor
+        factor (int): The binning factor
+
+    Returns:
+        array: The binned image in float64, or the image untouched when the
+        factor is 1 (so an unbinned run draws exactly the noise it did before)
+
+    """
+    if factor == 1:
+        return image
+    image = np.asarray(image, dtype="float64")
+    ny, nx = image.shape
+    if nx % factor or ny % factor:
+        raise ValueError("Cannot bin a %d x %d image by %d" % (ny, nx, factor))
+    return image.reshape(ny // factor, factor, nx // factor, factor).mean(axis=(1, 3))
+
+
 class ImageSimulator(object):
     """
     A class to do the actual simulation
@@ -57,6 +105,12 @@ class ImageSimulator(object):
         self.optics = optics
         self.scan = scan
         self.simulation = simulation
+        # Detection happens on the output pixel, which is binning x the pixel
+        # the exit wave and the optics were computed on
+        self.binning = output_binning(
+            simulation, microscope.detector.nx, microscope.detector.ny
+        )
+        self.pixel_size = microscope.detector.pixel_size * self.binning
         # The base seed of the detector noise, resolved once per run: the
         # configured one, or a fresh one recorded in the metadata
         self.noise_seed = parakeet.seeding.resolve(
@@ -91,17 +145,16 @@ class ImageSimulator(object):
         # Get the specimen atoms
         logger.info(f"Simulating image {index+1}")
 
-        # Compute the number of counts per pixel
-        electrons_per_pixel = (
-            electrons_per_angstrom * self.microscope.detector.pixel_size**2
-        )
+        # Compute the number of counts per (output) pixel
+        electrons_per_pixel = electrons_per_angstrom * self.pixel_size**2
 
         # Compute the electrons per pixel second
         electrons_per_second = electrons_per_pixel / exposure_time
         energy = self.microscope.beam.energy
 
-        # Get the image
-        image = self.optics.data[index]
+        # Get the image, binned to the output pixel before any noise, so that
+        # the shot noise, MTF and DQE below are those of the bigger pixel
+        image = bin_mean(self.optics.data[index], self.binning)
 
         # Detect. What the detector does to the signal is its MTF; what it does
         # to the signal-to-noise ratio is its DQE. They are different curves and
@@ -118,9 +171,10 @@ class ImageSimulator(object):
         if mtf is not None:
             # An MTF is in cycles per pixel, so a curve measured on a different
             # pixel has to be brought onto this one first. RELION keeps the two
-            # apart the same way, as --mtf_angpix.
+            # apart the same way, as --mtf_angpix. The detector's pixel is the
+            # output pixel.
             mtf_pixel_size = self.microscope.detector.mtf_pixel_size
-            detector_pixel_size = self.microscope.detector.pixel_size
+            detector_pixel_size = self.pixel_size
             if mtf_pixel_size and mtf_pixel_size != detector_pixel_size:
                 mtf, covered = parakeet.mtf.resample(
                     mtf, mtf_pixel_size, detector_pixel_size
@@ -160,6 +214,10 @@ class ImageSimulator(object):
         metadata["gain"] = 1
         metadata["offset"] = 0
         metadata["noise_seed"] = self.noise_seed
+        metadata["pixel_size_x"] = self.pixel_size
+        metadata["pixel_size_y"] = self.pixel_size
+        metadata["image_size_x"] = image.shape[1]
+        metadata["image_size_y"] = image.shape[0]
 
         # Compute the image scaled with Poisson noise
         return (index, image.astype("float32"), metadata)
@@ -194,18 +252,23 @@ def simulation_factory(
         assert len(multiprocessing["gpu_id"]) == 1
 
     # Create the simulation
-    return Simulation(
-        image_size=(microscope.detector.nx, microscope.detector.ny),
-        pixel_size=microscope.detector.pixel_size,
+    simulate_image = ImageSimulator(
+        microscope=microscope,
+        optics=optics,
         scan=scan,
-        simulate_image=ImageSimulator(
-            microscope=microscope,
-            optics=optics,
-            scan=scan,
-            simulation=simulation,
-            device=multiprocessing["device"],
-            gpu_id=multiprocessing["gpu_id"][0],
+        simulation=simulation,
+        device=multiprocessing["device"],
+        gpu_id=multiprocessing["gpu_id"][0],
+    )
+    binning = simulate_image.binning
+    return Simulation(
+        image_size=(
+            microscope.detector.nx // binning,
+            microscope.detector.ny // binning,
         ),
+        pixel_size=simulate_image.pixel_size,
+        scan=scan,
+        simulate_image=simulate_image,
     )
 
 

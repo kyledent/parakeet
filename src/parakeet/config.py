@@ -611,7 +611,8 @@ class Detector(BaseModel):
             "differs from pixel_size. An MTF is in cycles per pixel, so the "
             "curve only means something alongside the pixel it was measured "
             "on; this is RELION's --mtf_angpix. None means the curve is "
-            "tabulated against this detector's own pixel."
+            "tabulated against this detector's own pixel: the image's pixel, "
+            "which is pixel_size x simulation.output_binning."
         ),
     )
 
@@ -871,6 +872,19 @@ class Simulation(BaseModel):
             "Run the GRF ice model at a pixel area above 4 A^2 with the "
             "band-limited potential off, where its corrections clamp (warns "
             "instead of raising)"
+        ),
+    )
+
+    output_binning: int = Field(
+        1,
+        ge=1,
+        description=(
+            "Bin the image by this factor before it is detected: blocks of "
+            "b x b pixels of the noiseless intensity are averaged, and the "
+            "shot noise, MTF and DQE are those of the bigger pixel. The "
+            "exit wave and optics stay at detector.pixel_size; the image "
+            "file's pixel is pixel_size x output_binning. detector.nx and "
+            "detector.ny must be multiples of it"
         ),
     )
 
