@@ -21,6 +21,7 @@ output that flows into downstream tomography processing without hand-built metad
 | Ice set-up once per grid | shipped (in the engine) | With the band-limited potential on, the engine computed the ice's variance fraction afresh on every slice, about 1.5 ms each; it now keeps it per grid spacing and ice spectrum. Results are unchanged |
 | Vacuum regions | shipped (in the engine) | A multi-region masker region with density 0 adds nothing but can still be subtracted by other regions, for holes and cracks (`MultiRegionMasker.supports_vacuum_regions`) |
 | Tabulated ice spectrum | shipped (in the engine) | `IceParameters.set_spectrum_table(q, P)` replaces the ice's two-Gaussian power spectrum with a table (needs the band-limited potential); the single-ice path now also honours the `m0` and `v0` overrides |
+| Multi-region projected potential | shipped (in the engine) | `compute_projected_potential` takes a `MultiRegionMasker`; `ice_slice_statistics(ice, dx, dy, dz)` gives the (mean, sigma, band-limited mode) of one slice of a material |
 | [Support film](fork/support_film.md) | **not wired up** | Model and config exist; nothing reads them yet |
 | Variable per-tilt dose | not started | Native per-tilt dose in tilt-series mode |
 

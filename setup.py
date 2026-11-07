@@ -12,7 +12,7 @@ from setuptools.command.build_ext import build_ext
 # The multislice engine: this fork's python-multem, pinned to one commit. That commit pins its MULTEM
 # submodule to one commit of kyledent/MULTEM in turn, so this commit fixes the whole engine. The install
 # scripts read it from here.
-PYTHON_MULTEM_COMMIT = "675809caeacdc061f9b5734278ed0b2dcd07b532"
+PYTHON_MULTEM_COMMIT = "304b152b4a5f7e5ff445a1ad14dbb5c851d2ed51"
 PYTHON_MULTEM = (
     "python-multem @ git+https://github.com/kyledent/python-multem.git@" + PYTHON_MULTEM_COMMIT
 )
