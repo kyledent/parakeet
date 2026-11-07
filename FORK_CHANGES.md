@@ -38,6 +38,7 @@ output that flows into downstream tomography processing without hand-built metad
 | Sphere masks on the GPU | shipped (in the engine) | A sphere region's slice mask is computed on the device like cuboids and cylinders, instead of pixel by pixel from the host; the mask is unchanged |
 | Masks on the atoms' grid | shipped (in the engine) | Region masks sample pixel corners, as the atom potential does; before, every region sat half a pixel from the atoms. Region edges move by half a pixel |
 | Partial-volume slice masks | shipped (in the engine), opt-in | `set_partial_volume(n)` on a masker weights each slice pixel by the fraction of the slice inside the region, so a region's path no longer snaps to whole slices at normal incidence; off by default |
+| Partial-volume slices in Parakeet | shipped, opt-in | `simulation.partial_volume_samples: n` (default 0, the midpoint test) turns on the engine's partial-volume slice masks for the ice and every region, with error at most dz/(2n) per face; it needs the engine feature `partial_volume` and refuses by name without it |
 | [Support film](fork/support_film.md) | **not wired up** | Model and config exist; nothing reads them yet |
 
 Proposals for unbuilt work, and the research behind these changes, are kept with the project's

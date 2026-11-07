@@ -282,6 +282,21 @@ def grf_parameters(material):
     return p
 
 
+def set_partial_volume(masker, simulation):
+    """
+    Weight a masker's slice masks by the fraction of each slice inside, if
+    simulation.partial_volume_samples asks for it (0, the default, leaves the
+    engine's midpoint test, and does not need the feature)
+
+    """
+    n = int(simulation.get("partial_volume_samples") or 0)
+    if n <= 0:
+        return
+    require_engine_features("partial_volume", multem=multem)
+    masker.set_partial_volume(n)
+    logger.info("Partial-volume slice masks: %d sub-slice samples" % n)
+
+
 def seed_masker(masker, index, scan, simulation):
     """
     Seed a masker's GRF from the base seed and the image, if a seed is set
@@ -812,6 +827,7 @@ class SimulationEngine(object):
 
         # Seed the ice, so the same base seed and image give the same field
         seed_masker(masker, index, scan, simulation)
+        set_partial_volume(masker, simulation)
 
         # Get the masker
         return masker
@@ -895,6 +911,7 @@ class SimulationEngine(object):
             masker.set_rotation(centre, orientation)
 
         seed_masker(masker, index, scan, simulation)
+        set_partial_volume(masker, simulation)
         logger.info(
             "Regions: %d, medium %s, %d masker regions"
             % (len(regions), medium, masker.num_regions())

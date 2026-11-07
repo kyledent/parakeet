@@ -28,12 +28,15 @@ def fake_engine(
     vacuum=True,
     table=True,
     potential=True,
+    partial=True,
 ):
     class Masker:
         pass
 
     if seed:
         Masker.set_seed = lambda self, value: None
+    if partial:
+        Masker.set_partial_volume = lambda self, n: None
 
     class IceParameters:
         def __init__(self):
@@ -53,6 +56,8 @@ def fake_engine(
 
         if vacuum:
             MultiRegionMasker.supports_vacuum_regions = True
+        if partial:
+            MultiRegionMasker.set_partial_volume = lambda self, n: None
         module.MultiRegionMasker = MultiRegionMasker
     if toggle:
         module.band_limited_potential = lambda: True
@@ -87,6 +92,7 @@ def test_an_old_engine_is_refused_by_name():
         vacuum=False,
         table=False,
         potential=False,
+        partial=False,
     )
     assert not any(engine_features(old).values())
     with pytest.raises(EngineFeatureError) as error:

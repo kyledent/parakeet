@@ -1075,6 +1075,19 @@ class Simulation(BaseModel):
         ),
     )
 
+    partial_volume_samples: int = Field(
+        0,
+        ge=0,
+        description=(
+            "How the GRF ice and regions of material fill each multislice slice. "
+            "0 (the default): a pixel's slice takes a region wholly or not at "
+            "all, by the slice's midpoint, so a face parallel to the slices "
+            "puts a path off by up to a slice thickness. n > 0: the fraction of "
+            "the slice inside, from n sub-slice tests (error at most dz/(2n) per "
+            "face); needs the engine's partial_volume"
+        ),
+    )
+
     output_binning: int = Field(
         1,
         ge=1,

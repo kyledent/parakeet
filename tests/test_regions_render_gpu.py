@@ -66,7 +66,13 @@ def render_with_ice(directory, ice_parameters, seed=1234):
 
 
 def render(
-    directory, regions, materials=None, seed=1234, ice_parameters=None, origin=(0, 0)
+    directory,
+    regions,
+    materials=None,
+    seed=1234,
+    ice_parameters=None,
+    origin=(0, 0),
+    simulation=None,
 ):
     directory.mkdir()
     # MULTEM slices only where there are atoms: two hydrogen atoms near a
@@ -110,6 +116,7 @@ def render(
             "padding": 20,
             "materials": materials,
             **({"ice_parameters": ice_parameters} if ice_parameters else {}),
+            **(simulation or {}),
         },
         "multiprocessing": {"device": "gpu", "nproc": 1, "gpu_id": [0]},
     }
@@ -429,9 +436,9 @@ def test_a_vacuum_region_needs_the_engine_to_support_it(tmp_path):
         )
 
 
-def potential_of(directory, regions, materials=None, origin=(0, 0)):
+def potential_of(directory, regions, materials=None, origin=(0, 0), **kwargs):
     """The projected potential volume (slices, ny, nx) of render()'s sample"""
-    _, path = render(directory, regions, materials=materials, origin=origin)
+    _, path = render(directory, regions, materials=materials, origin=origin, **kwargs)
     parakeet.simulate.potential(
         str(path), str(directory / "sample.h5"), str(directory / "potential")
     )
@@ -526,3 +533,38 @@ def test_the_potential_and_the_exit_wave_cover_the_same_field(tmp_path):
         assert abs(first - expected[0]) <= 1.5 and abs(last - expected[1]) <= 1.5
     across = profiles["potential across"]
     assert across.std() < 0.05 * abs(across.mean())
+
+
+def test_partial_volume_slices_give_a_thin_slab_its_thickness(tmp_path):
+    # A 20 A slab at four offsets against the slice grid (which starts at the
+    # anchor atom at z = 1 A). With partial-volume slice masks its projected
+    # mean is 20 A of water at every offset, to the bound dz / (2 n) per face;
+    # with the midpoint test it is a whole number of slices, off by up to dz
+    if not engine_features(multem)["partial_volume"]:
+        pytest.skip("this engine has no partial-volume slice masks")
+    dz, n, thick = 3.0, 16, 20.0
+    per_slice = multem.ice_slice_statistics(
+        parakeet.simulate.engine.grf_parameters(
+            {"density": WATER_DENSITY, "variance_constant": 1e-6}
+        ),
+        ANGPIX,
+        ANGPIX,
+        dz,
+    )[0]
+    expected = per_slice * thick / dz
+    centre = slice(NX // 4, 3 * NX // 4)  # away from the anchors' corner
+    errors = {}
+    for samples in (n, 0):
+        for z0 in (50.0, 50.75, 51.5, 52.25):
+            volume = potential_of(
+                tmp_path / ("n%d_z%.2f" % (samples, z0)),
+                doc(box("thin", -FAR, FIELD + FAR, z0=z0, z1=z0 + thick)),
+                ice_parameters={"variance_constant": 1e-6},
+                simulation={"partial_volume_samples": samples},
+            )
+            measured = volume.sum(axis=0)[centre, centre].mean()
+            errors[samples, z0] = (measured / expected - 1) * thick  # A of water
+            print("n %2d, z0 %.2f: %+.3f A" % (samples, z0, errors[samples, z0]))
+    for z0 in (50.0, 50.75, 51.5, 52.25):
+        assert abs(errors[n, z0]) < 2 * dz / (2 * n) + 0.02
+    assert max(abs(errors[0, z0]) for z0 in (50.0, 50.75, 51.5, 52.25)) > 0.5
