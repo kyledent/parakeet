@@ -199,9 +199,8 @@ def filter_transmission_tau(
     return float(total) if total.ndim == 0 else total
 
 
-def optical_depth_map(
+def path_length_maps(
     regions,
-    materials_mfp,
     shape,
     centre,
     orientation,
@@ -215,22 +214,23 @@ def optical_depth_map(
     step=2.0,
 ):
     """
-    The inelastic optical depth t/lambda of every pixel of an image of a sample
-    with regions of material: sum over materials of the path length through
-    each, divided by its inelastic mean free path
+    The path length (A) along the beam through each material, for every pixel
+    of an image of a sample with regions of material
 
     The rays run along the beam (lab z) through the pixel positions the exit
     wave uses (pixel k of the grid, margin included, at origin + (k - margin)
     pixel_size), into the sample through the frame's rotation about the sample
     centre and its position, as the atoms are placed. Each ray is sampled every
     `step` A and each sample takes the material of the region that owns it
-    (parakeet.sample._regions.owner), or the medium inside the sample shape.
-    The map is computed on every `stride`-th pixel and interpolated
-    (linearly) to the rest: material boundaries are smoothed over that width.
+    (parakeet.sample._regions.owner), or the medium inside the sample shape;
+    so a path is exact to about one step per boundary it crosses. The maps are
+    computed on every `stride`-th pixel and interpolated (linearly) to the
+    rest, except in the cells where the rays at the four corners disagree (a
+    boundary crosses them): every pixel of those is traced, so edges keep the
+    full resolution.
 
     Args:
         regions: The (medium, regions) from parakeet.sample._regions.parse
-        materials_mfp: Material name -> inelastic mean free path (A)
         shape, centre: The sample shape and centre
         orientation, position: The frame's rotation vector and position
         origin: The detector origin (x, y), A
@@ -240,7 +240,8 @@ def optical_depth_map(
         step: Sample spacing along a ray (A)
 
     Returns:
-        A (ny + 2 margin, nx + 2 margin) array
+        dict: material name -> (ny + 2 margin, nx + 2 margin) array of A
+        (vacuum is left out)
 
     """
     from scipy.ndimage import map_coordinates
@@ -251,9 +252,8 @@ def optical_depth_map(
 
     medium, regs = regions
     gx, gy = nx + 2 * margin, ny + 2 * margin
-    kx = np.arange(0, gx + stride - 1, stride).clip(max=gx - 1)
-    ky = np.arange(0, gy + stride - 1, stride).clip(max=gy - 1)
-    kx, ky = np.unique(kx), np.unique(ky)
+    kx = np.unique(np.arange(0, gx + stride - 1, stride).clip(max=gx - 1))
+    ky = np.unique(np.arange(0, gy + stride - 1, stride).clip(max=gy - 1))
     rot = Rotation.from_rotvec(orientation)
     centre = np.asarray(centre, dtype="float64")
     position = np.asarray(position, dtype="float64")
@@ -275,32 +275,86 @@ def optical_depth_map(
     lab = rot.apply(corners - centre) + centre - position
     z = np.arange(lab[:, 2].min(), lab[:, 2].max() + step, step)
 
-    mfp = {VACUUM_NAME: np.inf}
-    mfp.update(materials_mfp)
-    tau = np.zeros((len(ky), len(kx)))
-    for jy, y_px in enumerate(ky):
-        x = origin[0] + (kx - margin) * pixel_size
-        y = origin[1] + (y_px - margin) * pixel_size
-        pts = np.stack(np.broadcast_arrays(x[:, None], y, z[None, :]), axis=-1).reshape(
-            -1, 3
-        )
-        sample_pts = rot.inv().apply(pts + position - centre) + centre
-        owner = R.owner(regs, sample_pts) if regs else np.full(len(sample_pts), -1)
-        inv = np.zeros(len(sample_pts))
-        for i, r in enumerate(regs):
-            inv[owner == i] = 1.0 / mfp[r.material]
-        if medium != VACUUM_NAME:
-            in_medium = (owner < 0) & parakeet.sample.shape_contains(
-                sample_pts, centre, shape
-            )
-            inv[in_medium] = 1.0 / mfp[medium]
-        tau[jy] = (inv.reshape(len(kx), len(z)) * step).sum(axis=1)
+    materials = sorted(({r.material for r in regs} | {medium}) - {VACUUM_NAME})
 
-    # Interpolate onto every pixel
+    def trace(px_x, px_y):
+        """Path lengths (len(px), materials) for rays through pixels (k_x, k_y)"""
+        out = np.zeros((len(px_x), len(materials)))
+        for start in range(0, len(px_x), 4096):
+            sx = origin[0] + (px_x[start : start + 4096] - margin) * pixel_size
+            sy = origin[1] + (px_y[start : start + 4096] - margin) * pixel_size
+            pts = np.stack(
+                np.broadcast_arrays(sx[:, None], sy[:, None], z[None, :]), axis=-1
+            )
+            pts = pts.reshape(-1, 3)
+            sample_pts = rot.inv().apply(pts + position - centre) + centre
+            owner = R.owner(regs, sample_pts) if regs else np.full(len(sample_pts), -1)
+            index = np.full(len(sample_pts), -1)
+            for i, r in enumerate(regs):
+                if r.material != VACUUM_NAME:
+                    index[owner == i] = materials.index(r.material)
+            if medium != VACUUM_NAME:
+                inside = parakeet.sample.shape_contains(sample_pts, centre, shape)
+                index[(owner < 0) & inside] = materials.index(medium)
+            index = index.reshape(-1, len(z))
+            for m in range(len(materials)):
+                out[start : start + len(sx), m] = (index == m).sum(axis=1) * step
+        return out
+
+    # The coarse rays, interpolated onto every pixel
+    cy, cx = np.meshgrid(ky, kx, indexing="ij")
+    coarse = trace(cx.ravel(), cy.ravel()).reshape(len(ky), len(kx), len(materials))
     fy = np.interp(np.arange(gy), ky, np.arange(len(ky)))
     fx = np.interp(np.arange(gx), kx, np.arange(len(kx)))
     yy, xx = np.meshgrid(fy, fx, indexing="ij")
-    return map_coordinates(tau, [yy, xx], order=1, mode="nearest")
+    maps = np.stack(
+        [
+            map_coordinates(coarse[..., m], [yy, xx], order=1, mode="nearest")
+            for m in range(len(materials))
+        ],
+        axis=-1,
+    )
+
+    # Where the four rays at a cell's corners disagree, a boundary crosses the
+    # cell and interpolation would smear it: trace every pixel of such a cell
+    if len(ky) > 1 and len(kx) > 1 and materials:
+        corners = np.stack(
+            [coarse[:-1, :-1], coarse[:-1, 1:], coarse[1:, :-1], coarse[1:, 1:]]
+        )
+        spread = (corners.max(axis=0) - corners.min(axis=0)).max(axis=-1)
+        refine = np.zeros((gy, gx), bool)
+        for j, i in zip(*np.nonzero(spread > step / 2)):
+            refine[ky[j] : ky[j + 1] + 1, kx[i] : kx[i + 1] + 1] = True
+        if refine.any():
+            ry, rx = np.nonzero(refine)
+            maps[ry, rx] = trace(rx, ry)
+    return {m: maps[..., k] for k, m in enumerate(materials)}
+
+
+def optical_depth_map(regions, materials_mfp, *args, **kwargs):
+    """
+    The inelastic optical depth t/lambda of every pixel of an image of a sample
+    with regions of material: the sum over materials of the path length
+    through each (`path_length_maps`, which takes the remaining arguments)
+    divided by its inelastic mean free path
+
+    Args:
+        regions: The (medium, regions) from parakeet.sample._regions.parse
+        materials_mfp: Material name -> inelastic mean free path (A)
+
+    Returns:
+        A (ny + 2 margin, nx + 2 margin) array
+
+    """
+    paths = path_length_maps(regions, *args, **kwargs)
+    tau = None
+    for material, length in paths.items():
+        t = length / materials_mfp[material]
+        tau = t if tau is None else tau + t
+    if tau is None:  # nothing but vacuum
+        nx, ny, margin = args[5], args[6], args[7]
+        tau = np.zeros((ny + 2 * margin, nx + 2 * margin))
+    return tau
 
 
 VACUUM_NAME = "vacuum"

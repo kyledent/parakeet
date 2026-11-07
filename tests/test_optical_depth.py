@@ -124,3 +124,60 @@ def test_a_sphere_and_the_interpolated_map():
     assert coarse.shape == fine.shape
     assert coarse[48, 48] == pytest.approx(fine[48, 48], abs=1e-12)
     assert coarse[50, 50] == pytest.approx(fine[50, 50], rel=0.05)
+
+
+def test_path_lengths_per_material_add_up_to_the_depth():
+    ball = dict(
+        id="b",
+        kind="sphere",
+        material="dense",
+        parent="w",
+        centre_A=[200, 200, 100],
+        radius_A=40,
+    )
+    document = doc(slab("w", -2000, 2400, "water"), ball)
+    paths = I.path_length_maps(
+        R.parse(document),
+        SHAPE,
+        CENTRE,
+        (0, 0, 0),
+        (0, 0, 0),
+        (0, 0),
+        N,
+        N,
+        0,
+        PX,
+        stride=1,
+        step=0.5,
+    )
+    assert sorted(paths) == ["dense", "water"]
+    # Through the sphere's centre: 80 A of it and the rest of the 100 A slab water
+    assert paths["dense"][50, 50] == pytest.approx(80, abs=1)
+    assert paths["water"][50, 50] == pytest.approx(20, abs=1)
+    assert paths["dense"][5, 5] == 0 and paths["water"][5, 5] == pytest.approx(
+        100, abs=1
+    )
+    t = tau(document, {"water": 1000.0, "dense": 400.0})
+    assert np.allclose(t, paths["water"] / 1000.0 + paths["dense"] / 400.0)
+
+
+def test_a_coarse_stride_keeps_edges_sharp():
+    # A film with an empty hole: traced every pixel and every 8th, the maps are
+    # the same, edge included, because cells crossing a boundary are traced fully
+    hole = dict(
+        id="h",
+        kind="cylinder",
+        material="vacuum",
+        parent="w",
+        centre_A=[203, 197, 100],
+        axis=[0, 0, 1],
+        radius_A=90,
+        length_A=100,
+    )
+    document = doc(slab("w", -2000, 2400, "water"), hole)
+    every = tau(document, {"water": 1000.0}, stride=1)
+    eighth = tau(document, {"water": 1000.0}, stride=8)
+    print(
+        "max difference, stride 8 vs 1: %.3g (film 0.1)" % np.abs(eighth - every).max()
+    )
+    assert np.abs(eighth - every).max() < 1e-12
