@@ -513,6 +513,33 @@ def contains(region, points):
     raise RegionsError("Unknown kind %r" % region.kind)
 
 
+def thinnest(region):
+    """
+    The region's smallest dimension (A), whatever its orientation: a sphere's or
+    cylinder's diameter, a box's smallest side, an ellipsoid's smallest
+    diameter, a shell's wall, a slab's thickness. Cuts can make a region
+    thinner still near them; that is not counted
+
+    """
+    g = region.geometry
+    if region.kind == "sphere":
+        return 2 * g["radius_A"]
+    if region.kind == "cylinder":
+        return min(2 * g["radius_A"], g["length_A"])
+    if region.kind == "box":
+        return 2 * float(np.min(g["half_lengths_A"]))
+    if region.kind == "ellipsoid":
+        return 2 * float(np.min(g["semi_axes_A"]))
+    if region.kind == "ellipsoidal_shell":
+        inner = g["inner"]
+        if inner["mode"] == "offset":
+            return inner["thickness_A"]
+        return float(np.min(g["semi_axes_A"])) * (1 - inner["factor"])
+    if region.kind == "slab":
+        return g["thickness_A"]
+    raise RegionsError("Unknown kind %r" % region.kind)
+
+
 def bounds(region):
     """
     An axis-aligned box (lower, upper corners) containing a region's shape

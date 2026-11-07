@@ -224,3 +224,28 @@ def test_a_feature_smaller_than_a_cell_is_not_missed(feature):
     eighth = tau(document, mfp, stride=8)
     assert np.abs(every - 0.1).max() > 0.005  # the feature is there at stride 1
     assert np.abs(eighth - every).max() < 1e-12
+
+
+def test_a_thin_fibre_across_the_field_is_not_missed():
+    # A 3 A fibre running diagonally: its projected bounding box is large, but
+    # it is thin, and between rays it would be lost
+    fibre = dict(
+        id="fibre",
+        kind="cylinder",
+        material="dense",
+        parent="w",
+        centre_A=[214.0, 200.0, 100.0],
+        axis=[1, 1, 0],
+        radius_A=3.0,
+        length_A=300.0,
+    )
+    document = doc(slab("w", -2000, 2400, "water"), fibre)
+    mfp = {"water": 1000.0, "dense": 300.0}
+    every = tau(document, mfp, stride=1)
+    eighth = tau(document, mfp, stride=8)
+    assert np.abs(every - 0.1).max() > 0.005
+    print(
+        "diagonal fibre, stride 8 vs 1: max difference %.3g"
+        % np.abs(eighth - every).max()
+    )
+    assert np.abs(eighth - every).max() < 1e-12
