@@ -15,7 +15,7 @@ import warnings
 from math import sqrt, floor
 import parakeet.sample._regions
 import parakeet.seeding
-from parakeet.engine_check import require_engine_features
+from parakeet.engine_check import engine_features, require_engine_features
 from collections.abc import Iterable
 
 
@@ -760,11 +760,17 @@ class SimulationEngine(object):
         )
 
         # A sample with regions of material gets one region per material piece.
-        # So does plain ice with its own mean or variance per molecule: the
-        # engine's single-ice path keeps water's, and a water medium with no
-        # regions draws the same field (bit-identical with water's constants)
+        # So does plain ice with its own mean or variance per molecule on an
+        # engine whose single-ice path keeps water's: a water medium with no
+        # regions draws the same field (bit-identical with water's constants).
+        # The engine commit that made the single path honour them is the one
+        # that added the spectrum table, so that feature tells them apart
         regions = getattr(sample, "regions", None)
-        if regions is None and own_constants(simulation["ice_parameters"]):
+        if (
+            regions is None
+            and own_constants(simulation["ice_parameters"])
+            and not engine_features(multem)["spectrum_table"]
+        ):
             regions = PLAIN_ICE
         if regions is not None:
             return self.multi_region_masker(
