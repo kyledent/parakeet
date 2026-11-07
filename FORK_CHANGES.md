@@ -19,6 +19,7 @@ output that flows into downstream tomography processing without hand-built metad
 | Seedable ice | shipped (in the engine) | The engine's maskers take a random-field seed (`Masker.set_seed`, `MultiRegionMasker.set_seed`): with one, the same field and slicing give the same ice; the default stays a fresh field per simulation |
 | Atom-type table cache | shipped (in the engine) | The engine builds its per-element potential tables once per process for each potential type, grid spacing and band limit, instead of on every simulation (`MULTEM_ATOM_TYPE_CACHE`, on by default; `0` turns it off). Results are unchanged |
 | Ice set-up once per grid | shipped (in the engine) | With the band-limited potential on, the engine computed the ice's variance fraction afresh on every slice, about 1.5 ms each; it now keeps it per grid spacing and ice spectrum. Results are unchanged |
+| Vacuum regions | shipped (in the engine) | A multi-region masker region with density 0 adds nothing but can still be subtracted by other regions, for holes and cracks (`MultiRegionMasker.supports_vacuum_regions`) |
 | [Support film](fork/support_film.md) | **not wired up** | Model and config exist; nothing reads them yet |
 | Variable per-tilt dose | not started | Native per-tilt dose in tilt-series mode |
 
