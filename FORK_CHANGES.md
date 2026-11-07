@@ -29,7 +29,7 @@ development notes rather than in this repository.
 See [BUILD_NOTES.md](BUILD_NOTES.md) for source build instructions. Key issue: upstream PyPI packages (`python-multem`, `guanaco`) are source-only and must be compiled with the correct `CMAKE_CUDA_ARCHITECTURES` for your GPU.
 
 - Local (Ubuntu 22.04, Pascal-class GPU): `bash install.sh`
-- RHEL 8, Ada-class GPU: use the site install script under `parakeet_frontend/simulation/`
+- Other systems and GPUs: follow BUILD_NOTES.md, setting `CMAKE_CUDA_ARCHITECTURES` for the GPU
 
 ## Upstream
 

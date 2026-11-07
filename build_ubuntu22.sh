@@ -18,7 +18,7 @@
 # After build:
 #   conda activate parakeet
 #   python -c "import parakeet; print(parakeet.__version__)"
-#   cd parakeet_frontend/simulation && bash run_tests.sh --quick
+#   pytest tests
 #
 set -euo pipefail
 
@@ -205,8 +205,7 @@ echo "  To activate:"
 echo "    conda activate ${CONDA_ENV_NAME}"
 echo ""
 echo "  To run tests:"
-echo "    cd parakeet_frontend/simulation"
-echo "    bash run_tests.sh --quick"
+echo "    pytest tests"
 echo ""
 echo "  Editable install: source changes to src/parakeet/*.py"
 echo "  take effect immediately (no rebuild needed)."
