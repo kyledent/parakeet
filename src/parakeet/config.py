@@ -16,6 +16,7 @@ import yaml
 from enum import Enum
 from pydantic import ConfigDict, BaseModel as PydanticBaseModel
 from pydantic import Field
+from pydantic import model_validator
 from typing import Dict
 from typing import List
 from typing import Literal
@@ -863,6 +864,50 @@ class MPLPosition(str, Enum):
     optimal = "optimal"
 
 
+class SpectrumTable(BaseModel):
+    """
+    A tabulated power spectrum for the GRF ice model, in place of its two
+    Gaussians: P(q) at knots q (1/A), interpolated linearly, held at the first
+    knot's value below it and zero above the last. The scale of P does not
+    matter (the variance comes from variance_constant). Given as q and P, or
+    as a JSON file holding "q" and "P".
+
+    """
+
+    q: Optional[List[float]] = Field(None, description="The knots (1/A)")
+
+    P: Optional[List[float]] = Field(None, description="The power at the knots")
+
+    file: Optional[str] = Field(
+        None, description='A JSON file with "q" and "P" (read when loaded)'
+    )
+
+    @model_validator(mode="after")
+    def _load_and_check(self):
+        if self.file is not None:
+            if self.q is not None or self.P is not None:
+                raise ValueError("spectrum_table: give q and P, or file, not both")
+            import json
+
+            with open(self.file) as f:
+                table = json.load(f)
+            self.q = [float(v) for v in table["q"]]
+            self.P = [float(v) for v in table["P"]]
+        if self.q is None or self.P is None:
+            raise ValueError("spectrum_table needs q and P, or a file")
+        if len(self.q) != len(self.P) or len(self.q) < 2:
+            raise ValueError("spectrum_table needs at least 2 knots and as many P as q")
+        import math
+
+        if not all(math.isfinite(v) for v in self.q + self.P):
+            raise ValueError("spectrum_table values must be finite")
+        if self.q[0] <= 0 or any(b <= a for a, b in zip(self.q, self.q[1:])):
+            raise ValueError("spectrum_table q must start above 0 and increase")
+        if any(v < 0 for v in self.P):
+            raise ValueError("spectrum_table P must not be negative")
+        return self
+
+
 class IceParameters(BaseModel):
     """
     A model to describe the ice parameters
@@ -877,25 +922,12 @@ class IceParameters(BaseModel):
     a2: float = Field(0.801, description="The amplitude of gaussian 2")
     density: float = Field(0.94, gt=0, description="The density of the ice (g/cm^3)")
 
-
-class Material(IceParameters):
-    """
-    A material of the specimen's continuum, for sample.regions
-
-    The fields are the GRF ice model's, applied to another material: the
-    spectrum (m1, m2, s1, s2, a1, a2) and a density that the engine turns into
-    a number of water molecules per unit volume. The engine's mean and variance
-    per molecule are water's unless mean_constant and variance_constant are
-    given, so a material that is not water needs those constants, in the
-    engine's units per water-equivalent molecule.
-
-    """
-
-    representation: Literal["grf"] = Field(
-        "grf",
+    spectrum_table: Optional[SpectrumTable] = Field(
+        None,
         description=(
-            "How the material is represented: grf, a Gaussian random field "
-            "drawn per slice (the only one so far)"
+            "A tabulated power spectrum replacing the two Gaussians (needs the "
+            "engine's spectrum_table). Set variance_constant to the table's "
+            "own variance per molecule with it"
         ),
     )
 
@@ -914,6 +946,29 @@ class Material(IceParameters):
         description=(
             "The engine's potential variance per molecule, replacing water's; "
             "None keeps water's"
+        ),
+    )
+
+
+class Material(IceParameters):
+    """
+    A material of the specimen's continuum, for sample.regions
+
+    The fields are the GRF ice model's (IceParameters), applied to another
+    material: the spectrum (m1, m2, s1, s2, a1, a2, or a spectrum_table) and a
+    density that the engine turns into a number of water molecules per unit
+    volume. The engine's mean and variance per molecule are water's unless
+    mean_constant and variance_constant are given, so a material that is not
+    water needs those constants, in the engine's units per water-equivalent
+    molecule.
+
+    """
+
+    representation: Literal["grf"] = Field(
+        "grf",
+        description=(
+            "How the material is represented: grf, a Gaussian random field "
+            "drawn per slice (the only one so far)"
         ),
     )
 

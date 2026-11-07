@@ -237,6 +237,39 @@ def engine_materials(simulation):
     return materials
 
 
+# Plain ice as a regions document: a water medium filling the sample shape
+PLAIN_ICE = {"schema": "parakeet-regions/1", "medium": "water", "regions": []}
+
+
+def own_constants(ice_parameters):
+    """Whether ice parameters set their own mean or variance per molecule"""
+    return any(
+        ice_parameters.get(k) is not None
+        for k in ("mean_constant", "variance_constant")
+    )
+
+
+def set_spectrum_and_constants(p, material):
+    """
+    Give a multem.IceParameters a material's tabulated spectrum and its mean
+    and variance per molecule, where they are set
+
+    """
+    table = material.get("spectrum_table")
+    if table is not None:
+        require_engine_features("spectrum_table", multem=multem)
+        p.set_spectrum_table(list(table["q"]), list(table["P"]))
+    if (
+        material.get("mean_constant") is not None
+        or material.get("variance_constant") is not None
+    ):
+        require_engine_features("ice_m0", multem=multem)
+    if material.get("mean_constant") is not None:
+        p.m0 = material["mean_constant"]
+    if material.get("variance_constant") is not None:
+        p.v0 = material["variance_constant"]
+
+
 def grf_parameters(material):
     """
     A multem.IceParameters from a material's constants
@@ -246,10 +279,7 @@ def grf_parameters(material):
     for key in ("m1", "m2", "s1", "s2", "a1", "a2", "density"):
         if key in material:
             setattr(p, key, material[key])
-    if material.get("mean_constant") is not None:
-        p.m0 = material["mean_constant"]
-    if material.get("variance_constant") is not None:
-        p.v0 = material["variance_constant"]
+    set_spectrum_and_constants(p, material)
     return p
 
 
@@ -730,8 +760,14 @@ class SimulationEngine(object):
             simulation.get("allow_uncalibrated_sampling", False),
         )
 
-        # A sample with regions of material gets one region per material piece
-        if getattr(sample, "regions", None) is not None:
+        # A sample with regions of material gets one region per material piece.
+        # So does plain ice with its own mean or variance per molecule: the
+        # engine's single-ice path keeps water's, and a water medium with no
+        # regions draws the same field (bit-identical with water's constants)
+        regions = getattr(sample, "regions", None)
+        if regions is None and own_constants(simulation["ice_parameters"]):
+            regions = PLAIN_ICE
+        if regions is not None:
             return self.multi_region_masker(
                 index,
                 pixel_size,
@@ -742,6 +778,7 @@ class SimulationEngine(object):
                 sample,
                 scan,
                 simulation,
+                regions=regions,
             )
 
         # Create the masker
@@ -756,6 +793,7 @@ class SimulationEngine(object):
         ice_parameters.a1 = simulation["ice_parameters"]["a1"]
         ice_parameters.a2 = simulation["ice_parameters"]["a2"]
         ice_parameters.density = simulation["ice_parameters"]["density"]
+        set_spectrum_and_constants(ice_parameters, simulation["ice_parameters"])
         masker.set_ice_parameters(ice_parameters)
 
         # Get the sample centre
@@ -786,9 +824,11 @@ class SimulationEngine(object):
         sample,
         scan,
         simulation,
+        regions=None,
     ):
         """
         Get a multi-region masker for a sample with regions of material
+        (the sample's own, unless a regions document is given)
 
         Each region subtracts every region that outranks it, so each point gets
         the material of the one region that owns it (parakeet.sample._regions);
@@ -803,7 +843,7 @@ class SimulationEngine(object):
             )
         materials = engine_materials(simulation)
         medium, regions = parakeet.sample._regions.parse(
-            sample.regions, materials=materials
+            sample.regions if regions is None else regions, materials=materials
         )
         parakeet.sample._regions.check_nesting(regions)
         vacuum = parakeet.sample._regions.VACUUM

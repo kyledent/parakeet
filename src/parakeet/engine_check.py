@@ -53,6 +53,8 @@ FEATURES = {
     "grf_seed": lambda multem: hasattr(multem.Masker(), "set_seed"),
     # A multi-region masker region that only subtracts: vacuum, which has no
     # random field but must still cut its shape out of the regions below it.
+    # A tabulated GRF power spectrum in place of the two Gaussians.
+    "spectrum_table": lambda multem: hasattr(multem.IceParameters(), "spectrum_q"),
     "vacuum_regions": lambda multem: bool(
         getattr(
             getattr(multem, "MultiRegionMasker", None), "supports_vacuum_regions", False

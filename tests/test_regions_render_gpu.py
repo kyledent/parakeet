@@ -59,7 +59,12 @@ def box(
     )
 
 
-def render(directory, regions, materials=None, seed=1234):
+def render_with_ice(directory, ice_parameters, seed=1234):
+    """render() of plain ice with extra ice_parameters (no regions)"""
+    return render(directory, None, seed=seed, ice_parameters=ice_parameters)
+
+
+def render(directory, regions, materials=None, seed=1234, ice_parameters=None):
     directory.mkdir()
     # MULTEM slices only where there are atoms: two hydrogen atoms near a
     # corner of the field, one just inside each face of the slab
@@ -96,6 +101,7 @@ def render(directory, regions, materials=None, seed=1234):
             "margin": MARGIN,
             "padding": 20,
             "materials": materials,
+            **({"ice_parameters": ice_parameters} if ice_parameters else {}),
         },
         "multiprocessing": {"device": "gpu", "nproc": 1, "gpu_id": [0]},
     }
@@ -332,6 +338,21 @@ def test_a_film_with_an_empty_hole(tmp_path):
     assert film > 10 * se_film
     assert abs(in_hole) < max(5 * se_hole, 0.01 * film)
     assert phase[inside].std() < 0.05 * film_sd
+
+
+def test_plain_ice_takes_its_own_variance_per_molecule(tmp_path):
+    # Plain ice (no regions) with twice water's variance per molecule: the
+    # engine's single-ice path would keep water's, so Parakeet sends it through
+    # the regions path, and the phase variance doubles (a weak phase object)
+    base, _ = render(tmp_path / "water", None)
+    doubled, _ = render_with_ice(
+        tmp_path / "doubled", {"variance_constant": 2 * 10195.82}
+    )
+    whole = (slice(MARGIN, MARGIN + NX), slice(MARGIN, MARGIN + NX))
+    a = np.angle(base[whole] / base[whole].mean()).var()
+    b = np.angle(doubled[whole] / doubled[whole].mean()).var()
+    print("phase variance: water %.5g, twice V0 %.5g, ratio %.4f" % (a, b, b / a))
+    assert b / a == pytest.approx(2.0, rel=0.05)
 
 
 def test_a_vacuum_region_needs_the_engine_to_support_it(tmp_path):

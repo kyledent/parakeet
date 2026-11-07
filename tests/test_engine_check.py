@@ -20,7 +20,13 @@ from parakeet.engine_check import (
 
 
 def fake_engine(
-    m0=True, regions=True, toggle=True, spacing=True, seed=True, vacuum=True
+    m0=True,
+    regions=True,
+    toggle=True,
+    spacing=True,
+    seed=True,
+    vacuum=True,
+    table=True,
 ):
     class Masker:
         pass
@@ -33,6 +39,8 @@ def fake_engine(
             self.m1 = 0.0
             if m0:
                 self.m0 = -1.0
+            if table:
+                self.spectrum_q = []
 
     module = types.ModuleType("multem")
     module.__version__ = "0.4.2.dev7+g50a3a34"
@@ -59,7 +67,13 @@ def test_every_feature_present():
 
 def test_an_old_engine_is_refused_by_name():
     old = fake_engine(
-        m0=False, regions=False, toggle=False, spacing=False, seed=False, vacuum=False
+        m0=False,
+        regions=False,
+        toggle=False,
+        spacing=False,
+        seed=False,
+        vacuum=False,
+        table=False,
     )
     assert not any(engine_features(old).values())
     with pytest.raises(EngineFeatureError) as error:
