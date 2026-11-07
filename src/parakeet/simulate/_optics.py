@@ -67,6 +67,41 @@ class OpticsImageSimulator(object):
         self.device = device
         self.gpu_id = gpu_id
 
+    def optical_depth(self, index, margin):
+        """
+        The per-pixel inelastic optical depth of frame index, for a sample with
+        regions (parakeet.inelastic.optical_depth_map)
+
+        """
+        import parakeet.config
+        import parakeet.sample._new
+        import parakeet.sample._regions
+
+        document = parakeet.sample._new.regions_document(
+            parakeet.config.SampleRegions(**self.sample["regions"])
+        )
+        regions = parakeet.sample._regions.parse(document)
+        default = parakeet.inelastic.MEAN_FREE_PATH
+        ice = self.simulation.get("ice_parameters") or {}
+        mfp = {"water": ice.get("inelastic_mfp_A") or default}
+        for name, m in (self.simulation.get("materials") or {}).items():
+            mfp[name] = m.get("inelastic_mfp_A") or default
+        detector = self.microscope.detector
+        return parakeet.inelastic.optical_depth_map(
+            regions,
+            mfp,
+            self.sample["shape"],
+            self.sample["centre"],
+            self.scan.orientation[index],
+            self.scan.position[index],
+            detector.origin,
+            detector.nx,
+            detector.ny,
+            margin,
+            detector.pixel_size,
+            stride=self.simulation.get("inelastic_map_stride", 8),
+        )
+
     def __call__(self, index):
         """
         Simulate a single frame
@@ -208,19 +243,32 @@ class OpticsImageSimulator(object):
             slit_width = self.simulation["mp_loss_width"]
             if slit_width is None:
                 slit_width = parakeet.inelastic.DEFAULT_SLIT_WIDTH
-            electron_fraction = parakeet.inelastic.filter_transmission(
-                shape,
-                angle,
-                slit_width=slit_width,
-                zlp_fwhm=(
-                    microscope.beam.energy_spread * microscope.beam.energy * 1000.0
-                ),
-            )
+            zlp_fwhm = microscope.beam.energy_spread * microscope.beam.energy * 1000.0
+            if (self.sample or {}).get("regions"):
+                # Each pixel's path through each material, not one thickness
+                electron_fraction = parakeet.inelastic.filter_transmission_tau(
+                    self.optical_depth(index, margin),
+                    slit_width=slit_width,
+                    zlp_fwhm=zlp_fwhm,
+                )
+            else:
+                electron_fraction = parakeet.inelastic.filter_transmission(
+                    shape,
+                    angle,
+                    slit_width=slit_width,
+                    zlp_fwhm=zlp_fwhm,
+                )
 
             # Scale the image by the fraction of electrons
             image *= electron_fraction
 
         else:
+            if (self.sample or {}).get("regions"):
+                logger.warning(
+                    "The %s model uses the sample shape's thickness, not the "
+                    "regions' materials (only zero_loss traces them)"
+                    % self.simulation["inelastic_model"]
+                )
             # Get the effective thickness
             thickness = parakeet.inelastic.effective_thickness(shape, angle)  # A
             if self.simulation["inelastic_model"] == "unfiltered":
@@ -360,7 +408,7 @@ class OpticsImageSimulator(object):
             # Compute the electron fraction
             electron_fraction = np.sum(bin_weight)
 
-        logger.debug("Electron fraction = %.2f", electron_fraction)
+        logger.debug("Electron fraction = %.2f", float(np.mean(electron_fraction)))
 
         # Remove margin
         j0 = margin

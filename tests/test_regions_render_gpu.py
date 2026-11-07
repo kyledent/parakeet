@@ -355,6 +355,50 @@ def test_plain_ice_takes_its_own_variance_per_molecule(tmp_path):
     assert b / a == pytest.approx(2.0, rel=0.05)
 
 
+def test_the_zero_loss_filter_follows_each_materials_path(tmp_path):
+    # Water for x < 192 A and a material with half its inelastic mean free
+    # path beyond, both 120 A thick in vacuum: behind the energy filter each
+    # half keeps the fraction its own optical depth gives
+    import parakeet.inelastic as inelastic
+
+    mfp = inelastic.MEAN_FREE_PATH
+    psi, path = render(
+        tmp_path / "filtered",
+        doc(
+            box("water", -FAR, 192.0),
+            box("dense", 192.0, FIELD + FAR, material="dense"),
+        ),
+        materials={"dense": dict(DENSE, inelastic_mfp_A=mfp / 2)},
+    )
+    cfg = yaml.safe_load(path.read_text())
+    cfg["simulation"].update(inelastic_model="zero_loss", mp_loss_width=20)
+    path.write_text(yaml.safe_dump(cfg))
+    d = path.parent
+    parakeet.simulate.optics(str(path), str(d / "exit_wave.h5"), str(d / "optics.h5"))
+    image = np.asarray(parakeet.io.open(str(d / "optics.h5")).data[0], dtype=np.float64)
+
+    # The image after the optics has no margin
+    cols = np.arange(NX) * ANGPIX
+    water = image[:, (cols > 40) & (cols < 150)].mean()
+    dense = image[:, (cols > 234) & (cols < 344)].mean()
+    from parakeet.config import Beam
+
+    zlp = Beam().energy_spread * 300 * 1000.0  # the source's FWHM, eV
+    expect_water = inelastic.filter_transmission_tau(
+        THICKNESS / mfp, slit_width=20, zlp_fwhm=zlp
+    )
+    expect_dense = inelastic.filter_transmission_tau(
+        2 * THICKNESS / mfp, slit_width=20, zlp_fwhm=zlp
+    )
+    print(
+        "zero-loss means: water %.5f (expects %.5f x |psi|^2), dense %.5f (expects %.5f x |psi|^2)"
+        % (water, expect_water, dense, expect_dense)
+    )
+    # The intensity before the filter is ~1 in both halves (a weak phase object)
+    assert water == pytest.approx(expect_water, rel=0.01)
+    assert dense == pytest.approx(expect_dense, rel=0.01)
+
+
 def test_a_vacuum_region_needs_the_engine_to_support_it(tmp_path):
     if engine_features(multem)["vacuum_regions"]:
         pytest.skip("this engine supports vacuum regions")

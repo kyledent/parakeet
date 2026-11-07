@@ -940,6 +940,16 @@ class IceParameters(BaseModel):
         ),
     )
 
+    inelastic_mfp_A: Optional[float] = Field(
+        None,
+        gt=0,
+        description=(
+            "The inelastic mean free path (A) of this material at the beam "
+            "energy, for the zero-loss filter over a sample with regions; None "
+            "is water's (parakeet.inelastic.MEAN_FREE_PATH)"
+        ),
+    )
+
     variance_constant: Optional[float] = Field(
         None,
         gt=0,
@@ -1021,6 +1031,16 @@ class Simulation(BaseModel):
             "The materials sample.regions may name, by name. 'water' is the "
             "ice (ice_parameters) unless defined here; 'vacuum' is always "
             "available"
+        ),
+    )
+
+    inelastic_map_stride: int = Field(
+        8,
+        ge=1,
+        description=(
+            "For a sample with regions and the zero_loss model: the pixels "
+            "between the rays traced for the per-pixel path through each "
+            "material (interpolated between them)"
         ),
     )
 

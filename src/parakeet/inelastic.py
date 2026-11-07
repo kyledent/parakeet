@@ -141,11 +141,39 @@ def filter_transmission(
 
     """
     thickness = effective_thickness(shape, angle)
-    t_over_lambda = thickness / MEAN_FREE_PATH
+    return filter_transmission_tau(
+        thickness / MEAN_FREE_PATH,
+        slit_width=slit_width,
+        slit_centre=slit_centre,
+        plasmon_energy=plasmon_energy,
+        plasmon_fwhm=plasmon_fwhm,
+        zlp_fwhm=zlp_fwhm,
+        n_max=n_max,
+    )
 
+
+def filter_transmission_tau(
+    t_over_lambda,
+    slit_width=None,
+    slit_centre=0.0,
+    plasmon_energy=None,
+    plasmon_fwhm=None,
+    zlp_fwhm=None,
+    n_max=10,
+):
+    """
+    filter_transmission for a given optical depth t/lambda: a number, or an
+    array of them (one per pixel), with the same model and arguments
+
+    """
     # No slit means the filter is retracted: nothing is removed.
     if slit_width is None or slit_width <= 0:
-        return 1.0
+        return (
+            np.ones_like(t_over_lambda, dtype="float64")
+            if np.ndim(t_over_lambda)
+            else 1.0
+        )
+    t_over_lambda = np.asarray(t_over_lambda, dtype="float64")
 
     if plasmon_energy is None:
         plasmon_energy = ICE_PLASMON_ENERGY
@@ -157,9 +185,9 @@ def filter_transmission(
     low = slit_centre - slit_width / 2.0
     high = slit_centre + slit_width / 2.0
 
-    total = 0.0
+    total = np.zeros_like(t_over_lambda)
     for n in range(n_max + 1):
-        weight = t_over_lambda**n * exp(-t_over_lambda) / factorial(n)
+        weight = t_over_lambda**n * np.exp(-t_over_lambda) / factorial(n)
         if n == 0:
             width = zlp_fwhm
         else:
@@ -168,7 +196,114 @@ def filter_transmission(
         total += weight * _gaussian_fraction_in_window(
             n * plasmon_energy, width, low, high
         )
-    return total
+    return float(total) if total.ndim == 0 else total
+
+
+def optical_depth_map(
+    regions,
+    materials_mfp,
+    shape,
+    centre,
+    orientation,
+    position,
+    origin,
+    nx,
+    ny,
+    margin,
+    pixel_size,
+    stride=8,
+    step=2.0,
+):
+    """
+    The inelastic optical depth t/lambda of every pixel of an image of a sample
+    with regions of material: sum over materials of the path length through
+    each, divided by its inelastic mean free path
+
+    The rays run along the beam (lab z) through the pixel positions the exit
+    wave uses (pixel k of the grid, margin included, at origin + (k - margin)
+    pixel_size), into the sample through the frame's rotation about the sample
+    centre and its position, as the atoms are placed. Each ray is sampled every
+    `step` A and each sample takes the material of the region that owns it
+    (parakeet.sample._regions.owner), or the medium inside the sample shape.
+    The map is computed on every `stride`-th pixel and interpolated
+    (linearly) to the rest: material boundaries are smoothed over that width.
+
+    Args:
+        regions: The (medium, regions) from parakeet.sample._regions.parse
+        materials_mfp: Material name -> inelastic mean free path (A)
+        shape, centre: The sample shape and centre
+        orientation, position: The frame's rotation vector and position
+        origin: The detector origin (x, y), A
+        nx, ny, margin: The image size and margin (pixels)
+        pixel_size: A
+        stride: Pixels between computed rays
+        step: Sample spacing along a ray (A)
+
+    Returns:
+        A (ny + 2 margin, nx + 2 margin) array
+
+    """
+    from scipy.ndimage import map_coordinates
+    from scipy.spatial.transform import Rotation
+
+    import parakeet.sample
+    import parakeet.sample._regions as R
+
+    medium, regs = regions
+    gx, gy = nx + 2 * margin, ny + 2 * margin
+    kx = np.arange(0, gx + stride - 1, stride).clip(max=gx - 1)
+    ky = np.arange(0, gy + stride - 1, stride).clip(max=gy - 1)
+    kx, ky = np.unique(kx), np.unique(ky)
+    rot = Rotation.from_rotvec(orientation)
+    centre = np.asarray(centre, dtype="float64")
+    position = np.asarray(position, dtype="float64")
+
+    # The z range: everything that can hold material, placed as the atoms are
+    lo, hi = parakeet.sample.shape_bounding_box(centre, shape)
+    boxes = [(np.asarray(lo, float), np.asarray(hi, float))] + [
+        R.bounds(r) for r in regs
+    ]
+    corners = np.array(
+        [
+            [b[i][0], b[j][1], b[k][2]]
+            for b in boxes
+            for i in (0, 1)
+            for j in (0, 1)
+            for k in (0, 1)
+        ]
+    )
+    lab = rot.apply(corners - centre) + centre - position
+    z = np.arange(lab[:, 2].min(), lab[:, 2].max() + step, step)
+
+    mfp = {VACUUM_NAME: np.inf}
+    mfp.update(materials_mfp)
+    tau = np.zeros((len(ky), len(kx)))
+    for jy, y_px in enumerate(ky):
+        x = origin[0] + (kx - margin) * pixel_size
+        y = origin[1] + (y_px - margin) * pixel_size
+        pts = np.stack(np.broadcast_arrays(x[:, None], y, z[None, :]), axis=-1).reshape(
+            -1, 3
+        )
+        sample_pts = rot.inv().apply(pts + position - centre) + centre
+        owner = R.owner(regs, sample_pts) if regs else np.full(len(sample_pts), -1)
+        inv = np.zeros(len(sample_pts))
+        for i, r in enumerate(regs):
+            inv[owner == i] = 1.0 / mfp[r.material]
+        if medium != VACUUM_NAME:
+            in_medium = (owner < 0) & parakeet.sample.shape_contains(
+                sample_pts, centre, shape
+            )
+            inv[in_medium] = 1.0 / mfp[medium]
+        tau[jy] = (inv.reshape(len(kx), len(z)) * step).sum(axis=1)
+
+    # Interpolate onto every pixel
+    fy = np.interp(np.arange(gy), ky, np.arange(len(ky)))
+    fx = np.interp(np.arange(gx), kx, np.arange(len(kx)))
+    yy, xx = np.meshgrid(fy, fx, indexing="ij")
+    return map_coordinates(tau, [yy, xx], order=1, mode="nearest")
+
+
+VACUUM_NAME = "vacuum"
 
 
 def mp_loss_fraction(shape, angle):
