@@ -194,7 +194,8 @@ def set_sample_shape(masker, shape, centre):
 
 def set_region_shape(masker, region, place):
     """
-    Give a masker a region's shape
+    Give a masker a region's shape (as parakeet.sample._regions.engine_shape
+    gives it: an axis-aligned box, a sphere or a cylinder)
 
     Args:
         masker: A multem.Masker
@@ -202,20 +203,18 @@ def set_region_shape(masker, region, place):
         place: Maps a point in the sample frame to the simulation's frame
 
     """
-    g = region.geometry
-    if region.kind == "box":
+    kind, g = parakeet.sample._regions.engine_shape(region)
+    if kind == "box":
         h = g["half_lengths_A"]
         masker.set_cuboid(tuple(place(g["centre_A"] - h)), tuple(2 * h))
-    elif region.kind == "sphere":
+    elif kind == "sphere":
         masker.set_sphere(tuple(place(g["centre_A"])), g["radius_A"])
-    elif region.kind == "cylinder":
+    elif kind == "cylinder":
         a = g["axis"]
         start = place(g["centre_A"] - a * g["length_A"] / 2)
         masker.set_cylinder(
             tuple(start), tuple(a), g["length_A"], [g["radius_A"]], [0.0], [0.0]
         )
-    else:
-        raise ValueError("Unknown region kind %r" % region.kind)
 
 
 # A vacuum region's GRF constants: never drawn (the engine skips a region with
@@ -846,6 +845,8 @@ class SimulationEngine(object):
             sample.regions if regions is None else regions, materials=materials
         )
         parakeet.sample._regions.check_nesting(regions)
+        for r in regions:
+            parakeet.sample._regions.engine_shape(r)  # refuses what it cannot render
         vacuum = parakeet.sample._regions.VACUUM
         holes = [r.id for r in regions if r.material == vacuum]
         if holes:

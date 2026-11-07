@@ -1,0 +1,447 @@
+#
+# test_regions_kinds.py
+#
+# The region kinds the multislice engine cannot render yet (rotated boxes,
+# ellipsoids with cuts, ellipsoidal shells, slabs): their inside-tests, bounds,
+# nesting and ownership on the CPU, which are the reference for the engine's
+# label raster; and the renderer's refusal of them by name. CPU only.
+#
+import numpy as np
+import pytest
+
+from parakeet.sample import _regions as R
+
+
+def doc(*regions, medium="vacuum"):
+    return {"schema": R.SCHEMA, "medium": medium, "regions": list(regions)}
+
+
+def one(entry):
+    return R.parse(doc(entry))[1][0]
+
+
+def rot_z(deg):
+    t = np.radians(deg)
+    return [[np.cos(t), -np.sin(t), 0], [np.sin(t), np.cos(t), 0], [0, 0, 1]]
+
+
+def inside(region, pts):
+    return list(R.contains(region, np.asarray(pts, float)))
+
+
+def test_a_rotated_box_follows_its_axes():
+    r = one(
+        dict(
+            id="b",
+            kind="box",
+            material="water",
+            centre_A=[0, 0, 0],
+            half_lengths_A=[10, 2, 2],
+            axes=rot_z(45),
+        )
+    )
+    assert inside(r, [[5, 5, 0], [8, 8, 0], [-1, 1, 0], [-2, 2, 0]]) == [
+        True,
+        False,
+        True,
+        False,
+    ]
+
+
+def test_an_ellipsoid_follows_its_semi_axes_axes_and_cuts():
+    e = dict(
+        id="e",
+        kind="ellipsoid",
+        material="water",
+        centre_A=[0, 0, 0],
+        semi_axes_A=[10, 5, 2],
+    )
+    assert inside(one(e), [[9, 0, 0], [0, 4.9, 0], [0, 0, 2.1]]) == [True, True, False]
+    assert inside(one(dict(e, axes=rot_z(90))), [[0, 9, 0], [9, 0, 0]]) == [True, False]
+    cut = one(dict(e, cuts=[{"normal": [2, 0, 0], "offset_A": 0}]))
+    assert inside(cut, [[-5, 0, 0], [5, 0, 0]]) == [True, False]
+    # A cut is relative to the centre: moving the ellipsoid moves it
+    moved = one(
+        dict(e, centre_A=[100, 0, 0], cuts=[{"normal": [1, 0, 0], "offset_A": 0}])
+    )
+    assert inside(moved, [[95, 0, 0], [105, 0, 0]]) == [True, False]
+
+
+def test_a_shell_is_its_outer_ellipsoid_less_its_inner():
+    s = dict(
+        id="s",
+        kind="ellipsoidal_shell",
+        material="water",
+        centre_A=[0, 0, 0],
+        semi_axes_A=[10, 5, 2],
+    )
+    scaled = one(dict(s, inner={"mode": "scale", "factor": 0.5}))
+    assert inside(scaled, [[7, 0, 0], [2, 0, 0], [11, 0, 0]]) == [True, False, False]
+    offset = one(dict(s, inner={"mode": "offset", "thickness_A": 1}))
+    assert inside(offset, [[0, 0, 1.5], [0, 0, 0.5]]) == [True, False]
+    # cut_offset_A moves the inner surface's cut inward, leaving a wall at the cut
+    capped = one(
+        dict(
+            s,
+            inner={"mode": "scale", "factor": 0.5},
+            cuts=[{"normal": [1, 0, 0], "offset_A": 0}],
+            cut_offset_A=1,
+        )
+    )
+    assert inside(capped, [[-0.5, 0, 0], [-2, 0, 0], [0.5, 0, 0]]) == [
+        True,
+        False,
+        False,
+    ]
+
+
+def test_a_slab_is_its_thickness_over_its_footprint():
+    s = dict(
+        id="s",
+        kind="slab",
+        material="water",
+        origin_A=[0, 0, 0],
+        normal=[0, 0, 1],
+        u_axis=[1, 0, 0],
+        thickness_A=10,
+    )
+    rect = one(
+        dict(s, footprint={"kind": "rectangle", "half_u_A": 100, "half_v_A": 50})
+    )
+    assert inside(rect, [[99, 0, 4.9], [0, 51, 0], [0, 0, 5], [0, 0, -5]]) == [
+        True,
+        False,
+        False,
+        True,
+    ]
+    disc = one(
+        dict(s, footprint={"kind": "disc", "centre_uv_A": [20, 0], "radius_A": 10})
+    )
+    assert inside(disc, [[25, 0, 0], [5, 0, 0]]) == [True, False]
+    clipped = one(
+        dict(
+            s,
+            footprint={
+                "kind": "rectangle",
+                "half_u_A": 100,
+                "half_v_A": 50,
+                "clips": [{"normal_uv": [1, 0], "offset_A": 0}],
+            },
+        )
+    )
+    assert inside(clipped, [[-10, 0, 0], [10, 0, 0]]) == [True, False]
+    # A tilted slab: u_axis is made perpendicular to the normal
+    tilted = one(
+        dict(
+            s,
+            normal=[0, 1, 1],
+            u_axis=[1, 0, 1],
+            footprint={"kind": "rectangle", "half_u_A": 100, "half_v_A": 100},
+        )
+    )
+    n = np.array([0, 1, 1]) / np.sqrt(2)
+    assert inside(
+        tilted, [4.9 * n, 5.1 * n, 60 * np.array([0, 1, -1]) / np.sqrt(2)]
+    ) == [True, False, True]
+
+
+@pytest.mark.parametrize(
+    "entry, message",
+    [
+        (
+            dict(kind="ellipsoid", centre_A=[0, 0, 0], semi_axes_A=[1, 0, 1]),
+            "semi_axes_A must be positive",
+        ),
+        (
+            dict(
+                kind="ellipsoid",
+                centre_A=[0, 0, 0],
+                semi_axes_A=[1, 1, 1],
+                axes=[[1, 0, 0], [0, 1, 0], [0, 0, -1]],
+            ),
+            "must be a rotation",
+        ),
+        (
+            dict(
+                kind="ellipsoid",
+                centre_A=[0, 0, 0],
+                semi_axes_A=[1, 1, 1],
+                cuts=[{"normal": [0, 0, 0], "offset_A": 1}],
+            ),
+            "must not be zero",
+        ),
+        (
+            dict(
+                kind="ellipsoidal_shell",
+                centre_A=[0, 0, 0],
+                semi_axes_A=[5, 5, 5],
+                inner={"mode": "scale", "factor": 1.5},
+            ),
+            "factor must be in",
+        ),
+        (
+            dict(
+                kind="ellipsoidal_shell",
+                centre_A=[0, 0, 0],
+                semi_axes_A=[5, 5, 2],
+                inner={"mode": "offset", "thickness_A": 2},
+            ),
+            "less than the smallest",
+        ),
+        (
+            dict(
+                kind="ellipsoidal_shell",
+                centre_A=[0, 0, 0],
+                semi_axes_A=[5, 5, 5],
+                inner={"mode": "grow"},
+            ),
+            "inner must be",
+        ),
+        (
+            dict(
+                kind="slab",
+                origin_A=[0, 0, 0],
+                normal=[0, 0, 1],
+                u_axis=[0, 0, 2],
+                thickness_A=1,
+                footprint={"kind": "disc", "centre_uv_A": [0, 0], "radius_A": 1},
+            ),
+            "parallel",
+        ),
+        (
+            dict(
+                kind="slab",
+                origin_A=[0, 0, 0],
+                normal=[0, 0, 1],
+                u_axis=[1, 0, 0],
+                thickness_A=1,
+                footprint={"kind": "triangle"},
+            ),
+            "rectangle or disc",
+        ),
+        (
+            dict(
+                kind="slab",
+                origin_A=[0, 0, 0],
+                normal=[0, 0, 1],
+                u_axis=[1, 0, 0],
+                thickness_A=1,
+                footprint={"kind": "disc", "centre_uv_A": [0, 0], "radius_A": 1},
+                thickness_map={"array": "x"},
+            ),
+            "thickness_map",
+        ),
+    ],
+)
+def test_bad_geometry_is_refused_by_name(entry, message):
+    with pytest.raises(R.RegionsError, match=message):
+        one(dict(entry, id="r", material="water"))
+
+
+KINDS_SAMPLE = [
+    dict(
+        id="box",
+        kind="box",
+        material="water",
+        centre_A=[3, -2, 1],
+        half_lengths_A=[10, 4, 2],
+        axes=rot_z(30),
+    ),
+    dict(id="sph", kind="sphere", material="water", centre_A=[1, 2, 3], radius_A=7),
+    dict(
+        id="cyl",
+        kind="cylinder",
+        material="water",
+        centre_A=[0, 0, 0],
+        axis=[1, 2, 3],
+        radius_A=3,
+        length_A=20,
+    ),
+    dict(
+        id="ell",
+        kind="ellipsoid",
+        material="water",
+        centre_A=[2, 0, 0],
+        semi_axes_A=[12, 6, 3],
+        axes=rot_z(60),
+        cuts=[{"normal": [1, 1, 0], "offset_A": 4}],
+    ),
+    dict(
+        id="shl",
+        kind="ellipsoidal_shell",
+        material="water",
+        centre_A=[0, 1, 0],
+        semi_axes_A=[12, 6, 3],
+        inner={"mode": "offset", "thickness_A": 1},
+    ),
+    dict(
+        id="slb",
+        kind="slab",
+        material="water",
+        origin_A=[0, 0, 0],
+        normal=[1, 0, 2],
+        u_axis=[0, 1, 0],
+        thickness_A=6,
+        footprint={"kind": "disc", "centre_uv_A": [3, 1], "radius_A": 9},
+    ),
+]
+
+
+@pytest.mark.parametrize("entry", KINDS_SAMPLE, ids=[e["id"] for e in KINDS_SAMPLE])
+def test_bounds_contain_the_shape(entry):
+    r = one(entry)
+    lo, hi = R.bounds(r)
+    p = np.random.default_rng(3).uniform(-40, 40, size=(300000, 3))
+    p = p[R.contains(r, p)]
+    assert len(p) > 100
+    assert np.all(p >= lo - 1e-9) and np.all(p <= hi + 1e-9)
+
+
+def test_the_json_round_trip_keeps_every_kind():
+    medium, regions = R.parse(doc(*KINDS_SAMPLE))
+    again = R.parse(R.to_json(medium, regions))[1]
+    p = np.random.default_rng(4).uniform(-25, 25, size=(50000, 3))
+    for a, b in zip(regions, again):
+        assert np.array_equal(R.contains(a, p), R.contains(b, p))
+
+
+def test_sampled_nesting():
+    slab = dict(
+        id="section",
+        kind="slab",
+        material="water",
+        origin_A=[0, 0, 0],
+        normal=[0, 0, 1],
+        u_axis=[1, 0, 0],
+        thickness_A=200,
+        footprint={"kind": "rectangle", "half_u_A": 500, "half_v_A": 500},
+    )
+    cell = dict(
+        id="cell",
+        kind="ellipsoid",
+        material="water",
+        parent="section",
+        centre_A=[0, 0, 0],
+        semi_axes_A=[300, 200, 90],
+    )
+    poking = dict(cell, id="poking", semi_axes_A=[300, 200, 110])
+    wall = dict(
+        id="wall",
+        kind="ellipsoidal_shell",
+        material="water",
+        parent="cell",
+        centre_A=[0, 0, 0],
+        semi_axes_A=[300, 200, 90],
+        inner={"mode": "offset", "thickness_A": 10},
+    )
+    _, regions = R.parse(doc(slab, cell, wall))
+    R.check_nesting(regions)
+    _, regions = R.parse(doc(slab, poking))
+    with pytest.raises(R.RegionsError, match="'poking' is not inside its parent"):
+        R.check_nesting(regions)
+
+
+def test_the_paint_plan_draws_the_owner_with_every_kind():
+    section = dict(
+        id="section",
+        kind="slab",
+        material="water",
+        origin_A=[0, 0, 0],
+        normal=[0, 0, 1],
+        u_axis=[1, 0, 0],
+        thickness_A=60,
+        footprint={"kind": "rectangle", "half_u_A": 100, "half_v_A": 100},
+    )
+    cell = dict(
+        id="cell",
+        kind="ellipsoid",
+        material="water",
+        parent="section",
+        centre_A=[-20, 0, 0],
+        semi_axes_A=[60, 40, 25],
+        axes=rot_z(20),
+    )
+    wall = dict(
+        id="wall",
+        kind="ellipsoidal_shell",
+        material="water",
+        parent="cell",
+        centre_A=[-20, 0, 0],
+        semi_axes_A=[60, 40, 25],
+        axes=rot_z(20),
+        inner={"mode": "offset", "thickness_A": 4},
+    )
+    nucleus = dict(
+        id="nucleus",
+        kind="ellipsoid",
+        material="water",
+        parent="cell",
+        centre_A=[-30, 0, 0],
+        semi_axes_A=[15, 12, 10],
+        cuts=[{"normal": [0, 1, 0], "offset_A": 8}],
+    )
+    crack = dict(
+        id="crack",
+        kind="box",
+        material="water",
+        priority=1,
+        centre_A=[40, 0, 0],
+        half_lengths_A=[40, 3, 25],
+        axes=rot_z(-35),
+    )
+    medium, regions = R.parse(doc(section, cell, wall, nucleus, crack))
+    R.check_nesting(regions)
+    p = np.random.default_rng(5).uniform(-110, 110, size=(200000, 3))
+    p[:, 2] /= 3
+    owner = R.owner(regions, p)
+    plan = R.paint_plan(regions)
+    shapes = {r.id: R.contains(r, p) for r in regions}
+    drawn = np.zeros((len(regions), len(p)), bool)
+    for i, r in enumerate(regions):
+        m = shapes[r.id].copy()
+        for other in plan[r.id]:
+            m &= ~shapes[other]
+        drawn[i] = m
+    count = drawn.sum(axis=0)
+    assert np.all(count == (owner >= 0))
+    assert np.all(np.argmax(drawn, axis=0)[owner >= 0] == owner[owner >= 0])
+    assert set(owner) == set(range(-1, len(regions)))
+
+
+def test_the_engine_renders_what_it_can_and_names_the_rest():
+    sphere_like = one(
+        dict(
+            id="e",
+            kind="ellipsoid",
+            material="water",
+            centre_A=[1, 2, 3],
+            semi_axes_A=[5, 5, 5],
+        )
+    )
+    kind, g = R.engine_shape(sphere_like)
+    assert kind == "sphere" and g["radius_A"] == 5 and list(g["centre_A"]) == [1, 2, 3]
+    assert (
+        R.engine_shape(
+            one(
+                dict(
+                    id="b",
+                    kind="box",
+                    material="water",
+                    centre_A=[0, 0, 0],
+                    half_lengths_A=[1, 1, 1],
+                )
+            )
+        )[0]
+        == "box"
+    )
+    for entry, what in (
+        (KINDS_SAMPLE[0], "rotated box"),
+        (KINDS_SAMPLE[3], "ellipsoid"),
+        (KINDS_SAMPLE[4], "ellipsoidal_shell"),
+        (KINDS_SAMPLE[5], "slab"),
+    ):
+        with pytest.raises(
+            R.RegionsError,
+            match=r"\(%s\) cannot be rendered by the multislice engine" % what,
+        ):
+            R.engine_shape(one(entry))

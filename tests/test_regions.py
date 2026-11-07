@@ -95,7 +95,7 @@ def test_the_document_round_trips_through_json():
         (doc(sphere("a", [0, 0, 0], 1, priority=1.5)), "priority must be an integer"),
         (
             doc(box("a", [0, 0, 0], [1, 1, 1], axes=[[0, 1, 0], [1, 0, 0], [0, 0, 1]])),
-            "rotated box",
+            "must be a rotation",
         ),
     ],
 )
