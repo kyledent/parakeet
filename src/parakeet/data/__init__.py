@@ -93,9 +93,9 @@ def get_pdb_cache() -> dict:
 
     # Check local and cache directories
     for directory in [get_local_path(), get_cache_path()]:
-        # Create the directory if not exists
-        if not os.path.exists(directory):
-            os.mkdir(directory)
+        # Create the directory, and its parents, if it does not exist: the
+        # default cache sits in ~/.cache, which a fresh home may not have yet
+        os.makedirs(directory, exist_ok=True)
 
         # Check all the files in the directory for CIF and PDB files
         for filename in os.listdir(directory):
