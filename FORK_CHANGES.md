@@ -36,6 +36,8 @@ output that flows into downstream tomography processing without hand-built metad
 | Multi-region projected potential | shipped (in the engine) | `compute_projected_potential` takes a `MultiRegionMasker`; `ice_slice_statistics(ice, dx, dy, dz)` gives the (mean, sigma, band-limited mode) of one slice of a material |
 | Projected potential of regions | shipped | `parakeet.simulate.potential` simulates a sample with `sample.regions` through that overload, slice by slice as the exit wave is; it needs the engine feature `multi_region_potential` (`tools/check_engine.py`) and refuses by name without it |
 | Sphere masks on the GPU | shipped (in the engine) | A sphere region's slice mask is computed on the device like cuboids and cylinders, instead of pixel by pixel from the host; the mask is unchanged |
+| Masks on the atoms' grid | shipped (in the engine) | Region masks sample pixel corners, as the atom potential does; before, every region sat half a pixel from the atoms. Region edges move by half a pixel |
+| Partial-volume slice masks | shipped (in the engine), opt-in | `set_partial_volume(n)` on a masker weights each slice pixel by the fraction of the slice inside the region, so a region's path no longer snaps to whole slices at normal incidence; off by default |
 | [Support film](fork/support_film.md) | **not wired up** | Model and config exist; nothing reads them yet |
 
 Proposals for unbuilt work, and the research behind these changes, are kept with the project's
