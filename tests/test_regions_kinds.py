@@ -757,7 +757,9 @@ def test_the_check_regions_command(tmp_path, capsys):
     bad.write_text(json.dumps(clip_doc(CLIP_CHILDREN[1], dict(VACUOLE, semi_axes_A=[70, 15, 25]))))
     assert check_regions_impl(get_parser().parse_args([str(clean), "--max-planes", "16"])) == 0
     assert check_regions_impl(get_parser().parse_args([str(bad), "--max-planes", "16", "--json"])) == 1
-    out = json.loads(capsys.readouterr().out.split("0 findings (max_planes 16, --max-planes)\n")[-1])
+    first, _, rest = capsys.readouterr().out.partition("\n")
+    assert first.startswith("0 findings (max_planes 16, --max-planes")
+    out = json.loads(rest)
     assert out["max_planes"] == 16 and out["max_planes_source"] == "--max-planes"
     assert out["findings"][0]["reason"] == "outside_curved_ancestor"
 
@@ -800,14 +802,18 @@ def test_the_check_runs_without_the_engine(tmp_path):
 
     path = tmp_path / "doc.json"
     path.write_text(json.dumps(clip_doc(*CLIP_CHILDREN)))
+    # both CUDA-bound extensions made unimportable, and the command entered
+    # the way the console script enters it (the whole command-line package)
     code = (
-        "import sys; sys.modules['multem'] = None\n"
-        "from parakeet.command_line.sample._check_regions import check_regions_impl, get_parser\n"
-        "sys.exit(check_regions_impl(get_parser().parse_args([sys.argv[1], '--json'])))\n"
+        "import sys; sys.modules['multem'] = None; sys.modules['guanaco'] = None\n"
+        "import parakeet.command_line.sample as cli\n"
+        "sys.exit(cli._check_regions.check_regions_impl(\n"
+        "    cli._check_regions.get_parser().parse_args([sys.argv[1], '--json'])))\n"
     )
     run = subprocess.run([sys.executable, "-c", code, str(path)], capture_output=True, text=True)
     assert run.returncode == 0, run.stderr[-2000:]
     out = json.loads(run.stdout)
     assert out["max_planes"] == R.MAX_CONVEX_PLANES
     assert out["max_planes_source"].startswith("default: the engine could not be imported")
+    assert out["engine_feature_checked"] is False
     assert out["findings"] == []

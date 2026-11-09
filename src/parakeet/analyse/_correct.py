@@ -9,7 +9,10 @@
 # which is included in the root directory of this package.
 #
 import os.path
-import guanaco
+try:  # optional at import: the command-line package must load without CUDA
+    import guanaco
+except Exception:  # ImportError, or the extension failing to load (no libcuda)
+    guanaco = None
 import random
 import parakeet.microscope
 import parakeet.sample

@@ -22,7 +22,7 @@ from collections.abc import Iterable
 # Try to input MULTEM
 try:
     import multem
-except ImportError:
+except Exception:  # ImportError, or the extension failing to load (no libcuda)
     warnings.warn("Could not import MULTEM")
 
 

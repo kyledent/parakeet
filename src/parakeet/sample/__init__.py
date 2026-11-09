@@ -21,7 +21,7 @@ from scipy.spatial.transform import Rotation
 
 try:
     import multem
-except ImportError:
+except Exception:  # ImportError, or the extension failing to load (no libcuda)
     pass
 
 # np.random.seed(0)

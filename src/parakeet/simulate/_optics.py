@@ -26,7 +26,7 @@ from functools import singledispatch
 from parakeet.simulate.simulation import Simulation
 try:  # optional at import: parakeet.sample.check_regions must import without CUDA
     import multem
-except ImportError:
+except Exception:  # ImportError, or the extension failing to load (no libcuda)
     multem = None
 from parakeet.simulate.engine import SimulationEngine, defocus_spread
 from parakeet.simulate._fft_backend import fft2, ifft2, from_numpy, to_numpy

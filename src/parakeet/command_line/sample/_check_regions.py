@@ -65,17 +65,33 @@ def check_regions_impl(args):
         max_planes, source = args.max_planes, "--max-planes"
     else:
         max_planes, source = parakeet.sample._regions.engine_max_planes()
-    findings = parakeet.sample._regions.check_regions(args.regions, max_planes=max_planes)
+    convex = parakeet.sample._regions.engine_has_convex_regions()
+    findings = parakeet.sample._regions.check_regions(
+        args.regions, max_planes=max_planes, convex=convex
+    )
+    checked = convex is not None
     if args.json:
         print(json.dumps(
-            {"max_planes": max_planes, "max_planes_source": source, "findings": findings}, indent=1
+            {
+                "max_planes": max_planes,
+                "max_planes_source": source,
+                "engine_feature_checked": checked,
+                "findings": findings,
+            },
+            indent=1,
         ))
     else:
         for f in findings:
             print("%s\t%s\t%s" % (f["region"], f["reason"], f["message"]))
         print(
-            "%d finding%s (max_planes %d, %s)"
-            % (len(findings), "" if len(findings) == 1 else "s", max_planes, source)
+            "%d finding%s (max_planes %d, %s%s)"
+            % (
+                len(findings),
+                "" if len(findings) == 1 else "s",
+                max_planes,
+                source,
+                "" if checked else "; engine features not checked: no engine",
+            )
         )
     return 1 if findings else 0
 
