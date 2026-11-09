@@ -24,7 +24,10 @@ from parakeet.microscope import Microscope
 from parakeet.scan import Scan
 from functools import singledispatch
 from parakeet.simulate.simulation import Simulation
-import multem
+try:  # optional at import: parakeet.sample.check_regions must import without CUDA
+    import multem
+except ImportError:
+    multem = None
 from parakeet.simulate.engine import SimulationEngine, defocus_spread
 from parakeet.simulate._fft_backend import fft2, ifft2, from_numpy, to_numpy
 from parakeet.simulate._fast_ctf import compute_ctf as fast_ctf

@@ -890,12 +890,13 @@ class SimulationEngine(object):
             )
         materials = engine_materials(simulation)
         document = sample.regions if regions is None else regions
-        max_planes = getattr(
-            multem, "convex_max_planes", lambda: parakeet.sample._regions.MAX_CONVEX_PLANES
-        )()
-        # the one code path parakeet.sample.check_regions runs
+        # the one code path parakeet.sample.check_regions runs, with this
+        # engine's limit and features
         medium, regions, clips, findings = parakeet.sample._regions.render_plan(
-            document, max_planes=max_planes, materials=materials
+            document,
+            max_planes=parakeet.sample._regions.engine_max_planes()[0],
+            materials=materials,
+            convex=engine_features(multem)["convex_regions"],
         )
         if findings:
             raise parakeet.sample._regions.RegionsError(

@@ -757,5 +757,57 @@ def test_the_check_regions_command(tmp_path, capsys):
     bad.write_text(json.dumps(clip_doc(CLIP_CHILDREN[1], dict(VACUOLE, semi_axes_A=[70, 15, 25]))))
     assert check_regions_impl(get_parser().parse_args([str(clean), "--max-planes", "16"])) == 0
     assert check_regions_impl(get_parser().parse_args([str(bad), "--max-planes", "16", "--json"])) == 1
-    out = json.loads(capsys.readouterr().out.split("0 findings (max_planes 16)\n")[-1])
-    assert out["max_planes"] == 16 and out["findings"][0]["reason"] == "outside_curved_ancestor"
+    out = json.loads(capsys.readouterr().out.split("0 findings (max_planes 16, --max-planes)\n")[-1])
+    assert out["max_planes"] == 16 and out["max_planes_source"] == "--max-planes"
+    assert out["findings"][0]["reason"] == "outside_curved_ancestor"
+
+
+def test_a_regions_own_planes_count_against_the_budget():
+    # With or without clipping, a region the engine draws as a convex set may
+    # not have more half-spaces of its own than the engine allows
+    cuts = [
+        {"normal": [np.cos(t), np.sin(t), 0.2], "offset_A": 45}
+        for t in np.linspace(0, 2 * np.pi, 17, endpoint=False)
+    ]
+    cell = dict(CLIP_CHILDREN[1], parent=None, cuts=cuts)
+    import parakeet.sample
+
+    for document in (doc(cell), dict(doc(cell), containment="clip")):
+        findings = parakeet.sample.check_regions(document, max_planes=16)
+        assert [(f["region"], f["reason"]) for f in findings] == [("cell", "plane_budget")]
+        assert "17 half-spaces (17 of its own, 0 from its ancestors)" in findings[0]["message"]
+        assert parakeet.sample.check_regions(document, max_planes=32) == []
+
+
+def test_an_engine_without_convex_regions_is_a_finding():
+    import parakeet.sample
+
+    document = clip_doc(*CLIP_CHILDREN)
+    findings = parakeet.sample.check_regions(document, convex=False)
+    assert {f["reason"] for f in findings} == {"engine_feature"}
+    # the tilted slab is not a native kind either
+    assert {f["region"] for f in findings} == {"slab", "wall", "cell", "block"}
+    assert parakeet.sample.check_regions(document, convex=True) == []
+
+
+def test_the_check_runs_without_the_engine(tmp_path):
+    # With no importable engine (as on a node with no CUDA driver) the command
+    # still runs: parakeet imports without multem, and the limit falls back to
+    # the default, saying so
+    import json
+    import subprocess
+    import sys
+
+    path = tmp_path / "doc.json"
+    path.write_text(json.dumps(clip_doc(*CLIP_CHILDREN)))
+    code = (
+        "import sys; sys.modules['multem'] = None\n"
+        "from parakeet.command_line.sample._check_regions import check_regions_impl, get_parser\n"
+        "sys.exit(check_regions_impl(get_parser().parse_args([sys.argv[1], '--json'])))\n"
+    )
+    run = subprocess.run([sys.executable, "-c", code, str(path)], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr[-2000:]
+    out = json.loads(run.stdout)
+    assert out["max_planes"] == R.MAX_CONVEX_PLANES
+    assert out["max_planes_source"].startswith("default: the engine could not be imported")
+    assert out["findings"] == []

@@ -56,31 +56,26 @@ def get_parser(parser: ArgumentParser = None) -> ArgumentParser:
     return parser
 
 
-def engine_max_planes():
-    """The installed engine's limit on half-spaces per convex set, or the default"""
-    try:
-        import multem
-
-        return int(multem.convex_max_planes())
-    except Exception:
-        return parakeet.sample._regions.MAX_CONVEX_PLANES
-
-
 def check_regions_impl(args):
     """
     Check the document and report every finding
 
     """
-    max_planes = args.max_planes if args.max_planes is not None else engine_max_planes()
+    if args.max_planes is not None:
+        max_planes, source = args.max_planes, "--max-planes"
+    else:
+        max_planes, source = parakeet.sample._regions.engine_max_planes()
     findings = parakeet.sample._regions.check_regions(args.regions, max_planes=max_planes)
     if args.json:
-        print(json.dumps({"max_planes": max_planes, "findings": findings}, indent=1))
+        print(json.dumps(
+            {"max_planes": max_planes, "max_planes_source": source, "findings": findings}, indent=1
+        ))
     else:
         for f in findings:
             print("%s\t%s\t%s" % (f["region"], f["reason"], f["message"]))
         print(
-            "%d finding%s (max_planes %d)"
-            % (len(findings), "" if len(findings) == 1 else "s", max_planes)
+            "%d finding%s (max_planes %d, %s)"
+            % (len(findings), "" if len(findings) == 1 else "s", max_planes, source)
         )
     return 1 if findings else 0
 

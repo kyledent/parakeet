@@ -983,7 +983,8 @@ def clip_plan(regions, max_planes=MAX_CONVEX_PLANES):
             convex set would exceed MAX_CONVEX_PLANES
 
     """
-    plan, findings = _clip_findings(regions, max_planes)
+    plan, findings = _clip_findings(regions)
+    findings += _budget_findings(regions, plan, max_planes)
     if findings:
         raise RegionsError(_summary(findings))
     return plan
@@ -1001,8 +1002,46 @@ def _summary(findings):
     )
 
 
-def _clip_findings(regions, max_planes):
-    """clip_plan's work: the planes per region, and every reason to refuse"""
+def engine_max_planes():
+    """
+    The engine's limit on half-spaces per convex set, and where it came from:
+    (limit, "engine") from the installed multem.convex_max_planes(), else
+    (MAX_CONVEX_PLANES, "default: <why>") when the engine cannot be imported
+    (e.g. no CUDA driver) or does not report one
+
+    """
+    try:
+        import multem
+    except Exception as e:  # ImportError, or the extension's own load failure
+        return MAX_CONVEX_PLANES, "default: the engine could not be imported (%s)" % type(e).__name__
+    f = getattr(multem, "convex_max_planes", None)
+    if f is None:
+        return MAX_CONVEX_PLANES, "default: the engine does not report a limit"
+    return int(f()), "engine"
+
+
+def engine_has_convex_regions():
+    """Whether the installed engine draws convex regions; None if it cannot be imported"""
+    try:
+        import multem
+    except Exception:
+        return None
+    return hasattr(getattr(multem, "Masker", None), "set_convex")
+
+
+def _drawn_as_convex(region, clips):
+    """Whether the engine draws a region as a convex set (clipped, or not a native kind)"""
+    if region.id in clips:
+        return True
+    try:
+        engine_shape(region, convex=False)
+        return False
+    except RegionsError:
+        return True
+
+
+def _clip_findings(regions):
+    """The planes each region is clipped by, and every clipping reason to refuse"""
     by_id = {r.id: r for r in regions}
     plan, findings = {}, []
     for r in regions:
@@ -1035,22 +1074,44 @@ def _clip_findings(regions, max_planes):
                             "fit inside %r" % (r.id, c.id, c.kind, outside, c.id))))
                         break
         if planes:
-            own = len(convex_form(r)["planes"])
-            if own + len(planes) > max_planes:
-                findings.append(_finding(r.id, "plane_budget", (
-                    "Region %r would need %d half-spaces when clipped (%d of its own, "
-                    "%d from its ancestors), more than the engine's %d"
-                    % (r.id, own + len(planes), own, len(planes), max_planes))))
-                continue
             plan[r.id] = planes
     return plan, findings
 
 
-def render_plan(document, max_planes=MAX_CONVEX_PLANES, materials=None):
+def _budget_findings(regions, clips, max_planes):
+    """Every region drawn as a convex set whose half-spaces (its own and the
+    clip's; a shell's inner set separately) exceed the engine's limit"""
+    findings = []
+    for r in regions:
+        if not _drawn_as_convex(r, clips):
+            continue
+        form = convex_form(r)
+        own, added = len(form["planes"]), len(clips.get(r.id, []))
+        if own + added > max_planes:
+            findings.append(_finding(r.id, "plane_budget", (
+                "Region %r would need %d half-spaces (%d of its own, %d from its "
+                "ancestors), more than the engine's %d"
+                % (r.id, own + added, own, added, max_planes))))
+        elif form["inner"] is not None and len(form["inner"]["planes"]) > max_planes:
+            findings.append(_finding(r.id, "plane_budget", (
+                "Region %r's inner surface would need %d half-spaces, more than "
+                "the engine's %d" % (r.id, len(form["inner"]["planes"]), max_planes))))
+    return findings
+
+
+def render_plan(document, max_planes=None, materials=None, convex=None):
     """
     What the multislice renderer does with a regions document, and every
     reason it would refuse it: the one code path for check_regions and the
     renderer's masker build
+
+    Args:
+        document: A path, a JSON string or a dict
+        max_planes: The engine's half-spaces per convex set; None asks the
+            installed engine (engine_max_planes)
+        materials: The materials table, if the names are to be checked
+        convex: Whether the engine draws convex regions; None asks the
+            installed engine, and skips the check if there is none
 
     Returns:
         (medium, regions, clips, findings): clips maps a region id to the
@@ -1058,39 +1119,55 @@ def render_plan(document, max_planes=MAX_CONVEX_PLANES, materials=None):
         {"region", "reason", "message"} (empty if it renders)
 
     """
+    if max_planes is None:
+        max_planes = engine_max_planes()[0]
+    if convex is None:
+        convex = engine_has_convex_regions()
     medium, regions = parse(document, materials=materials)
-    if containment(document) == "clip":
-        clips, findings = _clip_findings(regions, max_planes)
-        return medium, regions, clips, findings
     findings = []
-    by_id = {r.id: r for r in regions}
-    for r in regions:
-        if r.parent is None:
-            continue
-        try:
-            inside = nested(r, by_id[r.parent])
-        except RegionsError as e:
-            findings.append(_finding(r.id, "too_thin_to_check", str(e)))
-            continue
-        if not inside:
-            findings.append(_finding(r.id, "outside_parent", (
-                "Region %r is not inside its parent %r. Clipping a child to its "
-                "parent needs \"containment\": \"clip\" in the document"
-                % (r.id, r.parent))))
-    return medium, regions, {}, findings
+    if containment(document) == "clip":
+        clips, findings = _clip_findings(regions)
+    else:
+        clips = {}
+        by_id = {r.id: r for r in regions}
+        for r in regions:
+            if r.parent is None:
+                continue
+            try:
+                inside = nested(r, by_id[r.parent])
+            except RegionsError as e:
+                findings.append(_finding(r.id, "too_thin_to_check", str(e)))
+                continue
+            if not inside:
+                findings.append(_finding(r.id, "outside_parent", (
+                    "Region %r is not inside its parent %r. Clipping a child to its "
+                    "parent needs \"containment\": \"clip\" in the document"
+                    % (r.id, r.parent))))
+    if convex is False:
+        for r in regions:
+            if _drawn_as_convex(r, clips):
+                findings.append(_finding(r.id, "engine_feature", (
+                    "Region %r (%s%s) needs the engine feature convex_regions, which "
+                    "the installed engine lacks" % (
+                        r.id, r.kind, ", clipped" if r.id in clips else ""))))
+    findings += _budget_findings(regions, clips, max_planes)
+    return medium, regions, clips, findings
 
 
-def check_regions(document, max_planes=MAX_CONVEX_PLANES, materials=None):
+def check_regions(document, max_planes=None, materials=None, convex=None):
     """
     Every reason the multislice renderer would refuse a regions document,
     without rendering: a list of {"region", "reason", "message"}, empty if it
-    renders (on an engine with convex regions). Reasons: "parse",
-    "outside_parent", "outside_curved_ancestor", "too_thin_to_check",
-    "plane_budget". The messages are the renderer's own
+    renders. Reasons: "parse", "outside_parent", "outside_curved_ancestor",
+    "too_thin_to_check", "plane_budget", "engine_feature". The messages are
+    the renderer's own. max_planes and convex default to what the installed
+    engine says (render_plan); give them to check for another engine, or
+    with none installed (then convex regions are assumed and the limit is
+    MAX_CONVEX_PLANES)
 
     """
     try:
-        return render_plan(document, max_planes, materials)[3]
+        return render_plan(document, max_planes, materials, convex)[3]
     except RegionsError as e:
         return [_finding(None, "parse", str(e))]
 
