@@ -890,19 +890,19 @@ class SimulationEngine(object):
             )
         materials = engine_materials(simulation)
         document = sample.regions if regions is None else regions
-        medium, regions = parakeet.sample._regions.parse(document, materials=materials)
-        if parakeet.sample._regions.containment(document) == "clip":
-            # children are clipped by their planes-only ancestors; a child
-            # poking out of a curved ancestor is refused by name
-            max_planes = getattr(
-                multem, "convex_max_planes", lambda: parakeet.sample._regions.MAX_CONVEX_PLANES
-            )()
-            clips = parakeet.sample._regions.clip_plan(regions, max_planes=max_planes)
-            if clips:
-                require_engine_features("convex_regions", multem=multem)
-        else:
-            parakeet.sample._regions.check_nesting(regions)
-            clips = {}
+        max_planes = getattr(
+            multem, "convex_max_planes", lambda: parakeet.sample._regions.MAX_CONVEX_PLANES
+        )()
+        # the one code path parakeet.sample.check_regions runs
+        medium, regions, clips, findings = parakeet.sample._regions.render_plan(
+            document, max_planes=max_planes, materials=materials
+        )
+        if findings:
+            raise parakeet.sample._regions.RegionsError(
+                parakeet.sample._regions._summary(findings)
+            )
+        if clips:
+            require_engine_features("convex_regions", multem=multem)
         convex = engine_features(multem)["convex_regions"]
         for r in regions:
             # refuses what it cannot render

@@ -2237,4 +2237,5 @@ from parakeet.sample._mill import * # noqa
 from parakeet.sample._sputter import * # noqa
 from parakeet.sample._fiducials import * # noqa
 from parakeet.sample._support_film import * # noqa
+from parakeet.sample._regions import check_regions # noqa
 # fmt: on

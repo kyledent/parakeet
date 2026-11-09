@@ -103,6 +103,7 @@ def main():
                 "parakeet.sample.mill=parakeet.command_line.sample:mill",
                 "parakeet.sample.sputter=parakeet.command_line.sample:sputter",
                 "parakeet.sample.show=parakeet.command_line.sample:show",
+                "parakeet.sample.check_regions=parakeet.command_line.sample:check_regions",
                 "parakeet.simulate.potential=parakeet.command_line.simulate:potential",
                 "parakeet.simulate.exit_wave=parakeet.command_line.simulate:exit_wave",
                 "parakeet.simulate.optics=parakeet.command_line.simulate:optics",

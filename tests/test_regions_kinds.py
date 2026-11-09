@@ -706,3 +706,56 @@ def test_the_plane_limit_comes_from_the_engine():
     with pytest.raises(R.RegionsError, match="18 half-spaces .* more than the engine's 16"):
         R.clip_plan(regions, max_planes=16)
     assert len(R.clip_plan(regions, max_planes=32)["cell"]) == 2
+
+
+def test_check_regions_reports_every_finding(tmp_path):
+    # Two bad regions in one clip document: a vacuole poking out of its curved
+    # cell, and a region needing more half-spaces than the engine has. The
+    # check reports both, with the renderer's own wording, and the renderer
+    # refuses with the first and a count of the rest
+    import parakeet.sample
+
+    big = dict(VACUOLE, semi_axes_A=[70, 15, 25])
+    cuts = [
+        {"normal": [np.cos(t), np.sin(t), 0.1], "offset_A": 45}
+        for t in np.linspace(0, 2 * np.pi, 16, endpoint=False)
+    ]
+    crowded = dict(CLIP_CHILDREN[1], id="crowded", cuts=cuts, centre_A=[40, 0, 0])
+    document = clip_doc(CLIP_CHILDREN[1], big, crowded)
+    findings = parakeet.sample.check_regions(document, max_planes=16)
+    assert {(f["region"], f["reason"]) for f in findings} == {
+        ("vacuole", "outside_curved_ancestor"),
+        ("crowded", "plane_budget"),
+    }
+    medium, regions = R.parse(document)
+    with pytest.raises(R.RegionsError) as error:
+        R.clip_plan(regions, max_planes=16)
+    assert str(error.value).startswith(findings[0]["message"])
+    assert "(and 1 more" in str(error.value)
+    # the same document with room for the planes leaves only the poke-out
+    assert [f["reason"] for f in parakeet.sample.check_regions(document, max_planes=32)] == [
+        "outside_curved_ancestor"
+    ]
+
+
+def test_check_regions_on_a_clean_document_and_without_clipping():
+    import parakeet.sample
+
+    assert parakeet.sample.check_regions(clip_doc(*CLIP_CHILDREN, VACUOLE)) == []
+    # without containment: clip, a child outside its parent is a finding
+    findings = parakeet.sample.check_regions(doc(TILTED_SLAB, CLIP_CHILDREN[1]))
+    assert [(f["region"], f["reason"]) for f in findings] == [("cell", "outside_parent")]
+    assert parakeet.sample.check_regions('{"schema": "nope"}')[0]["reason"] == "parse"
+
+
+def test_the_check_regions_command(tmp_path, capsys):
+    import json
+    from parakeet.command_line.sample._check_regions import check_regions_impl, get_parser
+
+    clean, bad = tmp_path / "clean.json", tmp_path / "bad.json"
+    clean.write_text(json.dumps(clip_doc(*CLIP_CHILDREN)))
+    bad.write_text(json.dumps(clip_doc(CLIP_CHILDREN[1], dict(VACUOLE, semi_axes_A=[70, 15, 25]))))
+    assert check_regions_impl(get_parser().parse_args([str(clean), "--max-planes", "16"])) == 0
+    assert check_regions_impl(get_parser().parse_args([str(bad), "--max-planes", "16", "--json"])) == 1
+    out = json.loads(capsys.readouterr().out.split("0 findings (max_planes 16)\n")[-1])
+    assert out["max_planes"] == 16 and out["findings"][0]["reason"] == "outside_curved_ancestor"

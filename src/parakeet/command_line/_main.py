@@ -93,6 +93,11 @@ def add_sample_command(parser: ArgumentParser):
     sample._show.get_parser(
         subparsers.add_parser("show", help=sample._show.get_description())
     )
+    sample._check_regions.get_parser(
+        subparsers.add_parser(
+            "check_regions", help=sample._check_regions.get_description()
+        )
+    )
 
     # Return parser
     return parser
@@ -310,6 +315,7 @@ def sample_main(parser, args):
         None: lambda x: parser.print_help(),
         "new": sample._new.new_impl,
         "show": sample._show.show_impl,
+        "check_regions": sample._check_regions.check_regions_impl,
         "add_molecules": sample._add_molecules.add_molecules_impl,
         "add_fiducials": sample._fiducials.add_fiducials_impl,
         "mill": sample._mill.mill_impl,

@@ -4,3 +4,4 @@ from parakeet.command_line.sample._fiducials import *  # noqa
 from parakeet.command_line.sample._mill import *  # noqa
 from parakeet.command_line.sample._sputter import *  # noqa
 from parakeet.command_line.sample._show import *  # noqa
+from parakeet.command_line.sample._check_regions import *  # noqa

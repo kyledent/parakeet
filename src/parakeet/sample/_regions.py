@@ -983,8 +983,28 @@ def clip_plan(regions, max_planes=MAX_CONVEX_PLANES):
             convex set would exceed MAX_CONVEX_PLANES
 
     """
+    plan, findings = _clip_findings(regions, max_planes)
+    if findings:
+        raise RegionsError(_summary(findings))
+    return plan
+
+
+def _finding(region, reason, message):
+    return {"region": region, "reason": reason, "message": message}
+
+
+def _summary(findings):
+    """One refusal for a list of findings: the first, and how many more"""
+    more = len(findings) - 1
+    return findings[0]["message"] + (
+        " (and %d more: parakeet.sample.check_regions lists them all)" % more if more else ""
+    )
+
+
+def _clip_findings(regions, max_planes):
+    """clip_plan's work: the planes per region, and every reason to refuse"""
     by_id = {r.id: r for r in regions}
-    plan = {}
+    plan, findings = {}, []
     for r in regions:
         planes, curved = [], []
         a = r.parent
@@ -1001,29 +1021,78 @@ def clip_plan(regions, max_planes=MAX_CONVEX_PLANES):
             for n, d in planes:
                 pts = pts[pts @ n <= d]
             if len(pts) < NESTING_MIN_INSIDE:
-                raise RegionsError(
+                findings.append(_finding(r.id, "too_thin_to_check", (
                     "Region %r: too little of it is left inside its planes-only "
-                    "ancestors to check it against its curved ones" % r.id
-                )
-            for c in curved:
-                outside = float(np.mean(~contains(c, pts)))
-                if outside > CLIP_MAX_OUTSIDE_FRACTION:
-                    raise RegionsError(
-                        "Region %r pokes out of its ancestor %r (%s; a fraction %.3g "
-                        "of it, after clipping by its planes-only ancestors). The "
-                        "renderer clips only by boxes and rectangle slabs: make it "
-                        "fit inside %r" % (r.id, c.id, c.kind, outside, c.id)
-                    )
+                    "ancestors to check it against its curved ones" % r.id)))
+            else:
+                for c in curved:
+                    outside = float(np.mean(~contains(c, pts)))
+                    if outside > CLIP_MAX_OUTSIDE_FRACTION:
+                        findings.append(_finding(r.id, "outside_curved_ancestor", (
+                            "Region %r pokes out of its ancestor %r (%s; a fraction %.3g "
+                            "of it, after clipping by its planes-only ancestors). The "
+                            "renderer clips only by boxes and rectangle slabs: make it "
+                            "fit inside %r" % (r.id, c.id, c.kind, outside, c.id))))
+                        break
         if planes:
             own = len(convex_form(r)["planes"])
             if own + len(planes) > max_planes:
-                raise RegionsError(
+                findings.append(_finding(r.id, "plane_budget", (
                     "Region %r would need %d half-spaces when clipped (%d of its own, "
                     "%d from its ancestors), more than the engine's %d"
-                    % (r.id, own + len(planes), own, len(planes), max_planes)
-                )
+                    % (r.id, own + len(planes), own, len(planes), max_planes))))
+                continue
             plan[r.id] = planes
-    return plan
+    return plan, findings
+
+
+def render_plan(document, max_planes=MAX_CONVEX_PLANES, materials=None):
+    """
+    What the multislice renderer does with a regions document, and every
+    reason it would refuse it: the one code path for check_regions and the
+    renderer's masker build
+
+    Returns:
+        (medium, regions, clips, findings): clips maps a region id to the
+        half-spaces it is clipped by; findings lists every refusal as
+        {"region", "reason", "message"} (empty if it renders)
+
+    """
+    medium, regions = parse(document, materials=materials)
+    if containment(document) == "clip":
+        clips, findings = _clip_findings(regions, max_planes)
+        return medium, regions, clips, findings
+    findings = []
+    by_id = {r.id: r for r in regions}
+    for r in regions:
+        if r.parent is None:
+            continue
+        try:
+            inside = nested(r, by_id[r.parent])
+        except RegionsError as e:
+            findings.append(_finding(r.id, "too_thin_to_check", str(e)))
+            continue
+        if not inside:
+            findings.append(_finding(r.id, "outside_parent", (
+                "Region %r is not inside its parent %r. Clipping a child to its "
+                "parent needs \"containment\": \"clip\" in the document"
+                % (r.id, r.parent))))
+    return medium, regions, {}, findings
+
+
+def check_regions(document, max_planes=MAX_CONVEX_PLANES, materials=None):
+    """
+    Every reason the multislice renderer would refuse a regions document,
+    without rendering: a list of {"region", "reason", "message"}, empty if it
+    renders (on an engine with convex regions). Reasons: "parse",
+    "outside_parent", "outside_curved_ancestor", "too_thin_to_check",
+    "plane_budget". The messages are the renderer's own
+
+    """
+    try:
+        return render_plan(document, max_planes, materials)[3]
+    except RegionsError as e:
+        return [_finding(None, "parse", str(e))]
 
 
 def clipped_form(region, planes):
