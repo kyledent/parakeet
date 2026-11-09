@@ -541,3 +541,30 @@ def test_the_engine_renders_every_kind_with_convex_regions():
     for entry in KINDS_SAMPLE + CONVEX_EXTRA:
         kind, _ = R.engine_shape(one(entry), convex=True)
         assert kind in ("box", "sphere", "cylinder", "convex")
+
+
+def test_a_membrane_thin_shell_is_sampled_for_nesting():
+    # A 40 A bilayer on a ~2 um cell: its bounding box holds almost none of it,
+    # so nesting is sampled in the ellipsoid's own coordinates; nested in its
+    # cell when it is the cell's outer surface, and caught when it pokes out
+    cell = dict(
+        id="cell",
+        kind="ellipsoid",
+        material="water",
+        centre_A=[0, 0, 0],
+        semi_axes_A=[21000, 17000, 17000],
+        axes=rot_z(20),
+        cuts=[{"normal": [0, 0, 1], "offset_A": 900}, {"normal": [0, 0, -1], "offset_A": 900}],
+    )
+    bilayer = dict(
+        cell,
+        id="bilayer",
+        kind="ellipsoidal_shell",
+        parent="cell",
+        inner={"mode": "offset", "thickness_A": 40},
+    )
+    medium, regions = R.parse(doc(cell, bilayer))
+    assert R.nested(regions[1], regions[0])
+    bigger = dict(bilayer, semi_axes_A=[21050, 17000, 17000])
+    medium, regions = R.parse(doc(cell, bigger))
+    assert not R.nested(regions[1], regions[0])

@@ -785,16 +785,47 @@ def _inside_eroded(parent, points, margin):
     raise RegionsError("Unknown kind %r" % parent.kind)
 
 
+def _ellipsoid_samples(region, rng):
+    """
+    Points for the nesting check of an ellipsoid or a shell, drawn in its own
+    ellipsoidal coordinates, c + R (a * t * u) with u a random direction, so a
+    membrane-thin shell on a large ellipsoid is sampled (its bounding box would
+    hold almost none of it). For a shell, t runs only over the band its wall
+    can occupy; contains() then keeps the points actually inside the region
+    (its cuts and its inner surface)
+
+    """
+    g = region.geometry
+    a = np.asarray(g["semi_axes_A"], dtype=float)
+    t0 = 0.0
+    if region.kind == "ellipsoidal_shell":
+        inner = g["inner"]
+        if inner["mode"] == "scale":
+            t0 = float(inner["factor"])
+        else:
+            t0 = max(0.0, 1.0 - float(inner["thickness_A"]) / a.min())
+    u = rng.normal(size=(NESTING_SAMPLES, 3))
+    u /= np.linalg.norm(u, axis=1, keepdims=True)
+    # uniform in volume between t0 and 1 (t^3 uniform)
+    t = (t0**3 + (1 - t0**3) * rng.random(NESTING_SAMPLES)) ** (1.0 / 3.0)
+    return g["centre_A"] + (u * a * t[:, None]) @ g["axes"].T
+
+
 def _nested_sampled(child, parent):
     """
     Nesting by sampling: points drawn uniformly in the child's bounding box
     (a fixed seed), and every one inside the child must be inside the parent.
-    A sliver thinner than the sampling can be missed
+    A sliver thinner than the sampling can be missed. Ellipsoids and shells
+    are sampled in their own coordinates (`_ellipsoid_samples`), so a
+    membrane-thin shell is covered
 
     """
-    lo, hi = bounds(child)
     rng = np.random.default_rng(0)
-    p = lo + (hi - lo) * rng.random((NESTING_SAMPLES, 3))
+    if child.kind in ("ellipsoid", "ellipsoidal_shell"):
+        p = _ellipsoid_samples(child, rng)
+    else:
+        lo, hi = bounds(child)
+        p = lo + (hi - lo) * rng.random((NESTING_SAMPLES, 3))
     p = p[contains(child, p)]
     if len(p) < NESTING_MIN_INSIDE:
         raise RegionsError(
