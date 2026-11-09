@@ -666,3 +666,43 @@ def test_the_engine_plane_limit_is_named_when_clipping():
     medium, regions = R.parse(clip_doc(many))
     with pytest.raises(R.RegionsError, match="more than the engine's %d" % R.MAX_CONVEX_PLANES):
         R.clip_plan(regions)
+
+
+@pytest.mark.parametrize("entry", KINDS_SAMPLE + CONVEX_EXTRA, ids=lambda e: e["id"])
+def test_support_bounds_the_shape(entry):
+    # support(region, n) is the largest n . p over the shape (cuts ignored):
+    # never below a point inside it, and, without cuts or clips, reached
+    region = one(entry)
+    lo, hi = R.bounds(region)
+    rng = np.random.default_rng(5)
+    pts = lo + (hi - lo) * rng.random((400000, 3))
+    pts = pts[R.contains(region, pts)]
+    size = float(np.max(hi - lo))
+    uncut = not region.geometry.get("cuts") and not region.geometry.get("footprint", {}).get("clips")
+    for n in rng.normal(size=(12, 3)):
+        n /= np.linalg.norm(n)
+        h, reached = R.support(region, n), float(np.max(pts @ n))
+        assert h >= reached - 1e-9
+        if uncut:
+            assert h - reached < 0.03 * size
+
+
+def test_only_the_planes_a_region_crosses_clip_it():
+    # A cell poking through the slab's faces, far inside its footprint, gets the
+    # two face planes and none of the four edges
+    medium, regions = R.parse(clip_doc(CLIP_CHILDREN[1]))
+    assert len(R.clip_plan(regions)["cell"]) == 2
+    inside = dict(CLIP_CHILDREN[1], semi_axes_A=[5, 5, 5])  # inside the slab
+    medium, regions = R.parse(clip_doc(inside))
+    assert "cell" not in R.clip_plan(regions)
+
+
+def test_the_plane_limit_comes_from_the_engine():
+    cuts = [
+        {"normal": [np.cos(t), np.sin(t), 0.1], "offset_A": 45}
+        for t in np.linspace(0, 2 * np.pi, 16, endpoint=False)
+    ]
+    medium, regions = R.parse(clip_doc(dict(CLIP_CHILDREN[1], cuts=cuts)))
+    with pytest.raises(R.RegionsError, match="18 half-spaces .* more than the engine's 16"):
+        R.clip_plan(regions, max_planes=16)
+    assert len(R.clip_plan(regions, max_planes=32)["cell"]) == 2

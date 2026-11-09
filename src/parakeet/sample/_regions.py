@@ -900,9 +900,51 @@ def outside_fraction(child, parent):
 # quadric), so after the plane clipping it must lie inside: of its sampled
 # points, at most this fraction may fall outside such an ancestor
 CLIP_MAX_OUTSIDE_FRACTION = 0.0
-# The most half-spaces in one of the engine's convex sets (python-multem
-# Masker.set_convex)
+# The most half-spaces in one of the engine's convex sets when the engine does
+# not say (python-multem Masker.set_convex; newer engines report theirs through
+# multem.convex_max_planes(), which the renderer passes to clip_plan)
 MAX_CONVEX_PLANES = 16
+
+
+def support(region, n):
+    """
+    The largest n . p over a region's own shape, cuts ignored (they only shrink
+    it), for a unit normal n: the region lies in n . p <= d exactly when
+    support(region, n) <= d
+
+    """
+    n = np.asarray(n, dtype=float)
+    g = region.geometry
+    if region.kind == "sphere":
+        return float(n @ g["centre_A"] + g["radius_A"])
+    if region.kind in ("ellipsoid", "ellipsoidal_shell"):
+        R, a = g["axes"], np.asarray(g["semi_axes_A"], dtype=float)
+        return float(n @ g["centre_A"] + np.sqrt(np.sum((n @ R) ** 2 * a**2)))
+    if region.kind == "cylinder":
+        na = float(n @ g["axis"])
+        return float(
+            n @ g["centre_A"]
+            + g["length_A"] / 2 * abs(na)
+            + g["radius_A"] * np.sqrt(max(0.0, 1 - na**2))
+        )
+    if region.kind == "box":
+        h = g["half_lengths_A"] * np.abs(n @ g["axes"])
+        return float(n @ g["centre_A"] + h.sum())
+    if region.kind == "slab":
+        N, u, v, t = g["normal"], g["u_axis"], g["v_axis"], g["thickness_A"]
+        fp = g["footprint"]
+        if fp["kind"] == "rectangle":
+            return float(
+                n @ g["origin_A"]
+                + t / 2 * abs(n @ N)
+                + fp["half_u_A"] * abs(n @ u)
+                + fp["half_v_A"] * abs(n @ v)
+            )
+        cu, cv = fp["centre_uv_A"]
+        c = g["origin_A"] + cu * u + cv * v
+        nN = float(n @ N)
+        return float(n @ c + t / 2 * abs(nN) + fp["radius_A"] * np.sqrt(max(0.0, 1 - nN**2)))
+    raise RegionsError("Region %r (%s) has no support function" % (region.id, region.kind))
 
 
 def _planes_only(region):
@@ -914,7 +956,7 @@ def _planes_only(region):
     return None
 
 
-def clip_plan(regions):
+def clip_plan(regions, max_planes=MAX_CONVEX_PLANES):
     """
     How the multislice renderer clips the regions of a containment: clip
     document: for each region that needs it, the half-spaces of its planes-only
@@ -924,10 +966,14 @@ def clip_plan(regions):
     is (outer and ancestors) less inner; a shell's cut_offset_A applies to its
     own cuts only.
 
-    A region is clipped unless it is known to lie inside the ancestor: exactly
-    for boxes, spheres and cylinders in a box (nested()), and never assumed
-    otherwise (the planes are idempotent). Curved ancestors are checked, not
-    clipped: see CLIP_MAX_OUTSIDE_FRACTION.
+    Only the ancestor half-spaces the region crosses are added: one it lies
+    inside (its support() is within NESTING_TOLERANCE_A of the plane) is
+    redundant. Curved ancestors are checked, not clipped: see
+    CLIP_MAX_OUTSIDE_FRACTION.
+
+    Args:
+        regions: The list of Region
+        max_planes: The engine's limit on half-spaces per convex set
 
     Returns:
         dict: region id -> list of (normal, offset) half-spaces n . p <= offset
@@ -947,12 +993,8 @@ def clip_plan(regions):
             p = _planes_only(ancestor)
             if p is None:
                 curved.append(ancestor)
-            elif not (
-                r.kind in EXACT_NESTING
-                and ancestor.kind in EXACT_NESTING
-                and nested(r, ancestor)
-            ):
-                planes += p
+            else:
+                planes += [(n, d) for n, d in p if support(r, n) > d + NESTING_TOLERANCE_A]
             a = ancestor.parent
         if curved:
             pts = _child_samples(r)
@@ -974,11 +1016,11 @@ def clip_plan(regions):
                     )
         if planes:
             own = len(convex_form(r)["planes"])
-            if own + len(planes) > MAX_CONVEX_PLANES:
+            if own + len(planes) > max_planes:
                 raise RegionsError(
                     "Region %r would need %d half-spaces when clipped (%d of its own, "
                     "%d from its ancestors), more than the engine's %d"
-                    % (r.id, own + len(planes), own, len(planes), MAX_CONVEX_PLANES)
+                    % (r.id, own + len(planes), own, len(planes), max_planes)
                 )
             plan[r.id] = planes
     return plan

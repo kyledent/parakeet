@@ -894,7 +894,10 @@ class SimulationEngine(object):
         if parakeet.sample._regions.containment(document) == "clip":
             # children are clipped by their planes-only ancestors; a child
             # poking out of a curved ancestor is refused by name
-            clips = parakeet.sample._regions.clip_plan(regions)
+            max_planes = getattr(
+                multem, "convex_max_planes", lambda: parakeet.sample._regions.MAX_CONVEX_PLANES
+            )()
+            clips = parakeet.sample._regions.clip_plan(regions, max_planes=max_planes)
             if clips:
                 require_engine_features("convex_regions", multem=multem)
         else:
