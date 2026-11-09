@@ -683,3 +683,95 @@ def test_convex_regions_project_their_exact_paths(tmp_path, child):
     )
     assert (L["dense"][core] > 1).sum() > 1000
     assert error.max() < 1e-4 * predicted.max()
+
+
+def test_a_clip_document_renders_owners_rule(tmp_path):
+    # containment: clip with a cut shell and an ellipsoid poking through a
+    # tilted slab: the engine clips them by the slab's planes, and the projected
+    # potential of every pixel is the engine's slice mean x the exact path
+    # through each material, where the path maps follow owner()
+    if not engine_features(multem)["convex_regions"]:
+        pytest.skip("this engine has no convex regions")
+    import parakeet.inelastic
+    import parakeet.sample._regions as R
+
+    slab = dict(
+        id="slab",
+        kind="slab",
+        material="water",
+        origin_A=[192.37, 191.83, 60.0],
+        normal=[0.1, 0.0, 1.0],
+        u_axis=[1.0, 0.0, 0.0],
+        thickness_A=50.0,
+        footprint={"kind": "rectangle", "half_u_A": 2 * FAR, "half_v_A": 2 * FAR},
+    )
+    wall = dict(
+        id="wall",
+        kind="ellipsoidal_shell",
+        material="dense",
+        parent="slab",
+        centre_A=[150.3, 190.7, 58.0],
+        semi_axes_A=[110.0, 80.0, 70.0],
+        inner={"mode": "offset", "thickness_A": 15.0},
+        cuts=[{"normal": [1.0, 0.0, 0.0], "offset_A": 70.0}],
+        cut_offset_A=5.0,
+    )
+    cell = dict(
+        id="cell",
+        kind="ellipsoid",
+        material="dense",
+        parent="slab",
+        # apart from the wall: siblings that overlap are subtracted by their
+        # partial-volume fractions, which is exact only along rays where one
+        # lies inside the other
+        centre_A=[320.6, 200.2, 61.0],
+        semi_axes_A=[50.0, 90.0, 60.0],
+    )
+    regions = dict(doc(slab, wall, cell), containment="clip")
+    still = {"variance_constant": 1e-6}
+    volume = potential_of(
+        tmp_path / "clip",
+        regions,
+        materials={"dense": dict(DENSE, **still)},
+        ice_parameters=still,
+        simulation={"partial_volume_samples": 1},
+    )
+    dz = 3.0
+    mean = {
+        name: multem.ice_slice_statistics(
+            parakeet.simulate.engine.grf_parameters(m), ANGPIX, ANGPIX, dz
+        )[0]
+        / dz
+        for name, m in (
+            ("water", {"density": WATER_DENSITY, **still}),
+            ("dense", dict(DENSE, **still)),
+        )
+    }
+    shape = {
+        "type": "cuboid",
+        "cuboid": {"length_x": FIELD, "length_y": FIELD, "length_z": THICKNESS},
+    }
+    L = parakeet.inelastic.path_length_maps(
+        R.parse(regions),
+        shape,
+        (FIELD / 2, FIELD / 2, THICKNESS / 2),
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+        (0, 0),
+        NX,
+        NX,
+        0,
+        ANGPIX,
+        stride=1,
+        exact=True,
+    )
+    predicted = sum(mean[m] * L[m] for m in ("water", "dense") if m in L)
+    measured = volume.sum(axis=0)
+    core = (slice(0, NX - 16), slice(0, NX - 16))
+    error = np.abs(measured[core] - predicted[core])
+    print("clip: max |V - predicted| %.3g of %.3g" % (error.max(), predicted.max()))
+    # the clipped children are thinner than the slab everywhere: no pixel sees
+    # more dense path than the slab's
+    assert L["dense"][core].max() <= 50.0 / np.cos(np.arctan(0.1)) + 1e-6
+    assert (L["dense"][core] > 1).sum() > 1000
+    assert error.max() < 1e-4 * predicted.max()

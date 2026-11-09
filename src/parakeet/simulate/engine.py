@@ -192,19 +192,25 @@ def set_sample_shape(masker, shape, centre):
         )
 
 
-def set_region_shape(masker, region, place):
+def set_region_shape(masker, region, place, clip_planes=None):
     """
     Give a masker a region's shape (as parakeet.sample._regions.engine_shape
-    gives it: an axis-aligned box, a sphere or a cylinder)
+    gives it), clipped by extra half-spaces if any (clip_plan): a clipped
+    region is always drawn as a convex set
 
     Args:
         masker: A multem.Masker
         region: A parakeet.sample._regions.Region
         place: Maps a point in the sample frame to the simulation's frame
+        clip_planes: Half-spaces (normal, offset) to clip the region by
 
     """
-    convex = engine_features(multem)["convex_regions"]
-    kind, g = parakeet.sample._regions.engine_shape(region, convex=convex)
+    if clip_planes:
+        require_engine_features("convex_regions", multem=multem)
+        kind, g = "convex", parakeet.sample._regions.clipped_form(region, clip_planes)
+    else:
+        convex = engine_features(multem)["convex_regions"]
+        kind, g = parakeet.sample._regions.engine_shape(region, convex=convex)
     if kind == "convex":
         # place() is a translation t: a plane n . p <= d moves to n . p <= d + n . t
         t = np.asarray(place(np.zeros(3)), dtype=float)
@@ -883,14 +889,22 @@ class SimulationEngine(object):
                 "model: set simulation.ice to true"
             )
         materials = engine_materials(simulation)
-        medium, regions = parakeet.sample._regions.parse(
-            sample.regions if regions is None else regions, materials=materials
-        )
-        parakeet.sample._regions.check_nesting(regions)
+        document = sample.regions if regions is None else regions
+        medium, regions = parakeet.sample._regions.parse(document, materials=materials)
+        if parakeet.sample._regions.containment(document) == "clip":
+            # children are clipped by their planes-only ancestors; a child
+            # poking out of a curved ancestor is refused by name
+            clips = parakeet.sample._regions.clip_plan(regions)
+            if clips:
+                require_engine_features("convex_regions", multem=multem)
+        else:
+            parakeet.sample._regions.check_nesting(regions)
+            clips = {}
         convex = engine_features(multem)["convex_regions"]
         for r in regions:
             # refuses what it cannot render
-            parakeet.sample._regions.engine_shape(r, convex=convex)
+            if r.id not in clips:
+                parakeet.sample._regions.engine_shape(r, convex=convex)
         vacuum = parakeet.sample._regions.VACUUM
         holes = [r.id for r in regions if r.material == vacuum]
         if holes:
@@ -917,7 +931,7 @@ class SimulationEngine(object):
             )
         for r in regions:
             region_masker = multem.Masker(self.input.nx, self.input.ny, pixel_size)
-            set_region_shape(region_masker, r, place)
+            set_region_shape(region_masker, r, place, clips.get(r.id))
             material = (
                 VACUUM_PARAMETERS if r.material == vacuum else materials[r.material]
             )

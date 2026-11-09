@@ -820,13 +820,7 @@ def _nested_sampled(child, parent):
     membrane-thin shell is covered
 
     """
-    rng = np.random.default_rng(0)
-    if child.kind in ("ellipsoid", "ellipsoidal_shell"):
-        p = _ellipsoid_samples(child, rng)
-    else:
-        lo, hi = bounds(child)
-        p = lo + (hi - lo) * rng.random((NESTING_SAMPLES, 3))
-    p = p[contains(child, p)]
+    p = _child_samples(child)
     if len(p) < NESTING_MIN_INSIDE:
         raise RegionsError(
             "Region %r is too thin for its nesting in %r to be sampled"
@@ -866,8 +860,11 @@ def containment(document):
     With "refuse", a child whose shape pokes out of its parent's is an error.
     With "clip", it is allowed and clipped to its parent, as `owner()` and the
     path-length maps always do (a point is in a region only if it is also in
-    the region's parent); only the multislice renderer, whose paint plan cannot
-    clip, still refuses such a child until the engine has a label raster.
+    the region's parent). The multislice renderer clips it too, by the
+    half-spaces of its planes-only ancestors (`clip_plan`, which needs the
+    engine's convex regions); a child poking out of a curved ancestor is still
+    refused. This is the authoritative way to clip: a scene translator should
+    emit clip documents rather than pre-clip.
 
     """
     document = load(document)
@@ -879,13 +876,119 @@ def containment(document):
     return mode
 
 
+def _child_samples(child):
+    """Points inside a region for the sampled checks (a fixed seed)"""
+    rng = np.random.default_rng(0)
+    if child.kind in ("ellipsoid", "ellipsoidal_shell"):
+        p = _ellipsoid_samples(child, rng)
+    else:
+        lo, hi = bounds(child)
+        p = lo + (hi - lo) * rng.random((NESTING_SAMPLES, 3))
+    return p[contains(child, p)]
+
+
 def outside_fraction(child, parent):
     """The fraction of a child's volume outside its parent (sampled, as in nesting)"""
-    lo, hi = bounds(child)
-    rng = np.random.default_rng(0)
-    p = lo + (hi - lo) * rng.random((NESTING_SAMPLES, 3))
-    p = p[contains(child, p)]
+    p = _child_samples(child)
     return float(np.mean(~contains(parent, p))) if len(p) else 0.0
+
+
+# The renderer clips a child of a containment: clip document by the half-spaces
+# of its planes-only ancestors (boxes, slabs with a rectangle footprint). A
+# child of a curved ancestor (an ellipsoid, a shell, a sphere, a cylinder, a
+# disc slab) cannot be clipped by it (the engine's convex sets carry one
+# quadric), so after the plane clipping it must lie inside: of its sampled
+# points, at most this fraction may fall outside such an ancestor
+CLIP_MAX_OUTSIDE_FRACTION = 0.0
+# The most half-spaces in one of the engine's convex sets (python-multem
+# Masker.set_convex)
+MAX_CONVEX_PLANES = 16
+
+
+def _planes_only(region):
+    """A region's half-spaces if it is planes only (a box, a rectangle slab), else None"""
+    if region.kind == "box" or (
+        region.kind == "slab" and region.geometry["footprint"]["kind"] == "rectangle"
+    ):
+        return convex_form(region)["planes"]
+    return None
+
+
+def clip_plan(regions):
+    """
+    How the multislice renderer clips the regions of a containment: clip
+    document: for each region that needs it, the half-spaces of its planes-only
+    ancestors (every ancestor up the tree), to add to its convex set. This is
+    owner()'s rule (a point is in a region only if it is in every ancestor) for
+    those ancestors, exactly. A shell's inner set is left alone, so the shell
+    is (outer and ancestors) less inner; a shell's cut_offset_A applies to its
+    own cuts only.
+
+    A region is clipped unless it is known to lie inside the ancestor: exactly
+    for boxes, spheres and cylinders in a box (nested()), and never assumed
+    otherwise (the planes are idempotent). Curved ancestors are checked, not
+    clipped: see CLIP_MAX_OUTSIDE_FRACTION.
+
+    Returns:
+        dict: region id -> list of (normal, offset) half-spaces n . p <= offset
+
+    Raises:
+        RegionsError: Naming a region outside a curved ancestor, or one whose
+            convex set would exceed MAX_CONVEX_PLANES
+
+    """
+    by_id = {r.id: r for r in regions}
+    plan = {}
+    for r in regions:
+        planes, curved = [], []
+        a = r.parent
+        while a is not None:
+            ancestor = by_id[a]
+            p = _planes_only(ancestor)
+            if p is None:
+                curved.append(ancestor)
+            elif not (
+                r.kind in EXACT_NESTING
+                and ancestor.kind in EXACT_NESTING
+                and nested(r, ancestor)
+            ):
+                planes += p
+            a = ancestor.parent
+        if curved:
+            pts = _child_samples(r)
+            for n, d in planes:
+                pts = pts[pts @ n <= d]
+            if len(pts) < NESTING_MIN_INSIDE:
+                raise RegionsError(
+                    "Region %r: too little of it is left inside its planes-only "
+                    "ancestors to check it against its curved ones" % r.id
+                )
+            for c in curved:
+                outside = float(np.mean(~contains(c, pts)))
+                if outside > CLIP_MAX_OUTSIDE_FRACTION:
+                    raise RegionsError(
+                        "Region %r pokes out of its ancestor %r (%s; a fraction %.3g "
+                        "of it, after clipping by its planes-only ancestors). The "
+                        "renderer clips only by boxes and rectangle slabs: make it "
+                        "fit inside %r" % (r.id, c.id, c.kind, outside, c.id)
+                    )
+        if planes:
+            own = len(convex_form(r)["planes"])
+            if own + len(planes) > MAX_CONVEX_PLANES:
+                raise RegionsError(
+                    "Region %r would need %d half-spaces when clipped (%d of its own, "
+                    "%d from its ancestors), more than the engine's %d"
+                    % (r.id, own + len(planes), own, len(planes), MAX_CONVEX_PLANES)
+                )
+            plan[r.id] = planes
+    return plan
+
+
+def clipped_form(region, planes):
+    """A region's convex_form with extra half-spaces (from clip_plan)"""
+    form = convex_form(region)
+    form["planes"] = list(form["planes"]) + list(planes)
+    return form
 
 
 def check_nesting(regions, mode="refuse"):

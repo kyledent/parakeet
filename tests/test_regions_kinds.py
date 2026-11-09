@@ -568,3 +568,101 @@ def test_a_membrane_thin_shell_is_sampled_for_nesting():
     bigger = dict(bilayer, semi_axes_A=[21050, 17000, 17000])
     medium, regions = R.parse(doc(cell, bigger))
     assert not R.nested(regions[1], regions[0])
+
+
+TILTED_SLAB = dict(
+    id="slab",
+    kind="slab",
+    material="water",
+    origin_A=[0, 0, 0],
+    normal=[0.2, 0.1, 1],
+    u_axis=[1, 0, 0],
+    thickness_A=20,
+    footprint={"kind": "rectangle", "half_u_A": 200, "half_v_A": 200},
+)
+CLIP_CHILDREN = [
+    dict(
+        id="wall",
+        kind="ellipsoidal_shell",
+        material="water",
+        parent="slab",
+        centre_A=[3, -2, 1],
+        semi_axes_A=[60, 45, 35],
+        axes=rot_z(30),
+        cuts=[{"normal": [1, 0, 0], "offset_A": 40}],
+        inner={"mode": "offset", "thickness_A": 6},
+        cut_offset_A=3,
+    ),
+    dict(
+        id="cell",
+        kind="ellipsoid",
+        material="water",
+        parent="slab",
+        centre_A=[-5, 4, 0],
+        semi_axes_A=[50, 40, 30],
+    ),
+    dict(
+        id="block",
+        kind="box",
+        material="water",
+        parent="slab",
+        centre_A=[2, 3, 0],
+        half_lengths_A=[30, 15, 25],
+        axes=rot_z(25),
+    ),
+]
+VACUOLE = dict(
+    id="vacuole",
+    kind="ellipsoid",
+    material="water",
+    parent="cell",
+    centre_A=[-5, 4, 0],
+    semi_axes_A=[20, 15, 25],
+)
+
+
+def clip_doc(*regions):
+    d = doc(TILTED_SLAB, *regions)
+    d["containment"] = "clip"
+    return d
+
+
+def test_clipping_by_planes_only_ancestors_is_owners_rule():
+    # Children poking through a tilted slab are clipped by its planes, a shell's
+    # cut_offset_A staying with its own cuts, and a grandchild (a vacuole in an
+    # ellipsoid cell, inside the cell but through the slab) by the slab too:
+    # the clipped convex sets hold exactly the points in the child and in
+    # every ancestor
+    medium, regions = R.parse(clip_doc(*CLIP_CHILDREN, VACUOLE))
+    plan = R.clip_plan(regions)
+    by_id = {r.id: r for r in regions}
+    rng = np.random.default_rng(3)
+    pts = -80 + 160 * rng.random((300000, 3))
+    for r in regions[1:]:
+        assert r.id in plan, r.id
+        form = R.clipped_form(r, plan[r.id])
+        expected = R.contains(r, pts)
+        a = r.parent
+        while a is not None:
+            expected &= R.contains(by_id[a], pts)
+            a = by_id[a].parent
+        assert expected.sum() > 500
+        assert np.array_equal(R.convex_contains(form, pts), expected), r.id
+
+
+def test_a_child_outside_a_curved_ancestor_is_refused_when_clipping():
+    big = dict(VACUOLE, semi_axes_A=[70, 15, 25])  # pokes out of the cell in x
+    medium, regions = R.parse(clip_doc(CLIP_CHILDREN[1], big))
+    with pytest.raises(R.RegionsError, match="pokes out of its ancestor 'cell'"):
+        R.clip_plan(regions)
+
+
+def test_the_engine_plane_limit_is_named_when_clipping():
+    cuts = [
+        {"normal": [np.cos(t), np.sin(t), 0.1], "offset_A": 45}
+        for t in np.linspace(0, 2 * np.pi, R.MAX_CONVEX_PLANES, endpoint=False)
+    ]
+    many = dict(CLIP_CHILDREN[1], cuts=cuts)
+    medium, regions = R.parse(clip_doc(many))
+    with pytest.raises(R.RegionsError, match="more than the engine's %d" % R.MAX_CONVEX_PLANES):
+        R.clip_plan(regions)
