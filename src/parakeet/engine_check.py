@@ -67,6 +67,14 @@ FEATURES = {
     # per masker (set_partial_volume(n); 0 is the midpoint test)
     "partial_volume": lambda multem: hasattr(multem.Masker, "set_partial_volume")
     and hasattr(getattr(multem, "MultiRegionMasker", None), "set_partial_volume"),
+    # Partial-volume fractions computed exactly (one ray interval per pixel and slice)
+    # for spheres, cuboids and convex sets, not by sub-slice sampling; the binding's
+    # docstring says so (the API is the same as partial_volume's)
+    "exact_partial_volume": lambda multem: "exact"
+    in (getattr(multem.Masker, "set_partial_volume", None).__doc__ or ""),
+    # Regions of any kind as a quadric and half-spaces (Masker.set_convex): ellipsoids
+    # with axes and cuts, shells, slabs and rotated boxes
+    "convex_regions": lambda multem: hasattr(multem.Masker, "set_convex"),
     "multi_region_potential": lambda multem: (
         hasattr(multem, "ice_slice_statistics")
         and "MultiRegionMasker" in (multem.compute_projected_potential.__doc__ or "")

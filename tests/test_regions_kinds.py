@@ -442,7 +442,7 @@ def test_the_engine_renders_what_it_can_and_names_the_rest():
     ):
         with pytest.raises(
             R.RegionsError,
-            match=r"\(%s\) cannot be rendered by the multislice engine" % what,
+            match=r"\(%s\) cannot be rendered by this multislice engine" % what,
         ):
             R.engine_shape(one(entry))
 
@@ -479,3 +479,65 @@ def test_clip_containment_allows_a_child_outside_its_parent():
     assert R.containment(R.to_json(*R.parse(clip), "clip")) == "clip"
     with pytest.raises(R.RegionsError, match="containment must be"):
         R.parse(dict(doc(film), containment="grow"))
+
+
+CONVEX_EXTRA = [
+    dict(
+        id="cut_shell",
+        kind="ellipsoidal_shell",
+        material="water",
+        centre_A=[2, -1, 4],
+        semi_axes_A=[12, 9, 7],
+        axes=rot_z(25),
+        cuts=[{"normal": [0, 0, 1], "offset_A": 3}, {"normal": [1, -1, 0.5], "offset_A": 5}],
+        inner={"mode": "scale", "factor": 0.7},
+        cut_offset_A=1.5,
+    ),
+    dict(
+        id="clipped_slab",
+        kind="slab",
+        material="water",
+        origin_A=[0, 0, 0],
+        normal=[0.2, 0.1, 1],
+        u_axis=[1, 0, 0],
+        thickness_A=6,
+        footprint={
+            "kind": "rectangle",
+            "half_u_A": 15,
+            "half_v_A": 10,
+            "clips": [{"normal_uv": [1, 1], "offset_A": 8}],
+        },
+    ),
+    dict(
+        id="tilted_disc",
+        kind="slab",
+        material="water",
+        origin_A=[3, 2, -4],
+        normal=[0.5, 0, 1],
+        u_axis=[0, 1, 0],
+        thickness_A=5,
+        footprint={"kind": "disc", "centre_uv_A": [-2, 3], "radius_A": 8},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "entry", KINDS_SAMPLE + CONVEX_EXTRA, ids=lambda e: e["id"]
+)
+def test_the_convex_form_is_the_shape(entry):
+    # The engine's convex set (a quadric and half-spaces, less an inner set)
+    # holds exactly the points contains() does, off the surfaces
+    region = one(entry)
+    form = R.convex_form(region)
+    lo, hi = R.bounds(region)
+    rng = np.random.default_rng(7)
+    pts = lo - 2 + (hi - lo + 4) * rng.random((200000, 3))
+    expected = R.contains(region, pts)
+    assert expected.sum() > 500 and (~expected).sum() > 500
+    assert np.array_equal(R.convex_contains(form, pts), expected)
+
+
+def test_the_engine_renders_every_kind_with_convex_regions():
+    for entry in KINDS_SAMPLE + CONVEX_EXTRA:
+        kind, _ = R.engine_shape(one(entry), convex=True)
+        assert kind in ("box", "sphere", "cylinder", "convex")

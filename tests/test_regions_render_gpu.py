@@ -568,3 +568,118 @@ def test_partial_volume_slices_give_a_thin_slab_its_thickness(tmp_path):
     for z0 in (50.0, 50.75, 51.5, 52.25):
         assert abs(errors[n, z0]) < 2 * dz / (2 * n) + 0.02
     assert max(abs(errors[0, z0]) for z0 in (50.0, 50.75, 51.5, 52.25)) > 0.5
+
+
+CONVEX_CHILDREN = [
+    dict(
+        id="rotated_box",
+        kind="box",
+        # off the pixel lattice: at (192, 192) many pixel rays lie exactly in
+        # the vertical faces (4i + 3j = 1096), where the engine's n.p <= d and
+        # the box's half-open [-h, h) legitimately disagree
+        centre_A=[192.37, 191.83, 60.0],
+        half_lengths_A=[60.0, 30.0, 25.0],
+        axes=[[0.8, -0.6, 0.0], [0.6, 0.8, 0.0], [0.0, 0.0, 1.0]],
+    ),
+    dict(
+        id="cut_ellipsoid",
+        kind="ellipsoid",
+        centre_A=[190.0, 195.0, 58.0],
+        semi_axes_A=[80.0, 50.0, 30.0],
+        axes=[[0.8, 0.0, -0.6], [0.0, 1.0, 0.0], [0.6, 0.0, 0.8]],
+        cuts=[{"normal": [1.0, 0.3, 0.0], "offset_A": 40.0}],
+    ),
+    dict(
+        id="shell",
+        kind="ellipsoidal_shell",
+        centre_A=[192.0, 192.0, 60.0],
+        semi_axes_A=[100.0, 70.0, 45.0],
+        inner={"mode": "offset", "thickness_A": 12.0},
+        cuts=[{"normal": [0.0, 1.0, 0.0], "offset_A": 50.0}],
+        cut_offset_A=6.0,
+    ),
+    dict(
+        id="tilted_slab",
+        kind="slab",
+        origin_A=[192.0, 192.0, 60.0],
+        normal=[0.3, 0.0, 1.0],
+        u_axis=[1.0, 0.0, 0.0],
+        thickness_A=20.0,
+        footprint={"kind": "rectangle", "half_u_A": 110.0, "half_v_A": 90.0,
+                   "clips": [{"normal_uv": [1.0, -1.0], "offset_A": 60.0}]},
+    ),
+    dict(
+        id="disc_slab",
+        kind="slab",
+        origin_A=[192.0, 192.0, 60.0],
+        normal=[0.0, 0.4, 1.0],
+        u_axis=[1.0, 0.0, 0.0],
+        thickness_A=24.0,
+        footprint={"kind": "disc", "centre_uv_A": [10.0, -5.0], "radius_A": 100.0},
+    ),
+]
+
+
+@pytest.mark.parametrize("child", CONVEX_CHILDREN, ids=lambda c: c["id"])
+def test_convex_regions_project_their_exact_paths(tmp_path, child):
+    # A dense child of each kind the engine draws as a convex set, inside a
+    # water slab, with partial-volume slices: the projected potential of every
+    # pixel is sum over materials of (the engine's slice mean / dz) x the exact
+    # path through that material (parakeet.inelastic.path_length_maps)
+    if not engine_features(multem)["convex_regions"]:
+        pytest.skip("this engine has no convex regions")
+    import parakeet.inelastic
+    import parakeet.sample._regions as R
+
+    regions = doc(
+        box("slab", -FAR, FIELD + FAR),
+        dict(child, material="dense", parent="slab"),
+    )
+    still = {"variance_constant": 1e-6}
+    volume = potential_of(
+        tmp_path / child["id"],
+        regions,
+        materials={"dense": dict(DENSE, **still)},
+        ice_parameters=still,
+        simulation={"partial_volume_samples": 1},
+    )
+    dz = 3.0
+    mean = {
+        name: multem.ice_slice_statistics(
+            parakeet.simulate.engine.grf_parameters(m), ANGPIX, ANGPIX, dz
+        )[0]
+        / dz
+        for name, m in (
+            ("water", {"density": WATER_DENSITY, **still}),
+            ("dense", dict(DENSE, **still)),
+        )
+    }
+    shape = {
+        "type": "cuboid",
+        "cuboid": {"length_x": FIELD, "length_y": FIELD, "length_z": THICKNESS},
+    }
+    L = parakeet.inelastic.path_length_maps(
+        R.parse(regions),
+        shape,
+        (FIELD / 2, FIELD / 2, THICKNESS / 2),
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+        (0, 0),
+        NX,
+        NX,
+        0,
+        ANGPIX,
+        stride=1,
+        exact=True,
+    )
+    predicted = sum(mean[m] * L[m] for m in ("water", "dense") if m in L)
+    measured = volume.sum(axis=0)
+    # away from the anchor atoms' corner
+    core = (slice(0, NX - 16), slice(0, NX - 16))
+    error = np.abs(measured[core] - predicted[core])
+    print(
+        "%s: max |V - predicted| %.3g of %.3g (dense pixels %d)"
+        % (child["id"], error.max(), predicted.max(), int((L["dense"][core] > 0).sum()))
+    )
+    assert (L["dense"][core] > 1).sum() > 1000
+    assert error.max() < 1e-4 * predicted.max()

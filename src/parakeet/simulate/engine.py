@@ -203,7 +203,29 @@ def set_region_shape(masker, region, place):
         place: Maps a point in the sample frame to the simulation's frame
 
     """
-    kind, g = parakeet.sample._regions.engine_shape(region)
+    convex = engine_features(multem)["convex_regions"]
+    kind, g = parakeet.sample._regions.engine_shape(region, convex=convex)
+    if kind == "convex":
+        # place() is a translation t: a plane n . p <= d moves to n . p <= d + n . t
+        t = np.asarray(place(np.zeros(3)), dtype=float)
+
+        def planes(f):
+            return [(*map(float, n), float(d + np.asarray(n) @ t)) for n, d in f["planes"]]
+
+        def quadric(f):
+            return [] if f["A"] is None else [float(x) for x in np.asarray(f["A"]).ravel()]
+
+        inner = g["inner"]
+        masker.set_convex(
+            quadric(g),
+            tuple(map(float, place(g["centre"]))),
+            planes(g),
+            inner is not None,
+            quadric(inner) if inner is not None else [],
+            tuple(map(float, place(inner["centre"]))) if inner is not None else (0.0, 0.0, 0.0),
+            planes(inner) if inner is not None else [],
+        )
+        return
     if kind == "box":
         h = g["half_lengths_A"]
         masker.set_cuboid(tuple(place(g["centre_A"] - h)), tuple(2 * h))
@@ -865,8 +887,10 @@ class SimulationEngine(object):
             sample.regions if regions is None else regions, materials=materials
         )
         parakeet.sample._regions.check_nesting(regions)
+        convex = engine_features(multem)["convex_regions"]
         for r in regions:
-            parakeet.sample._regions.engine_shape(r)  # refuses what it cannot render
+            # refuses what it cannot render
+            parakeet.sample._regions.engine_shape(r, convex=convex)
         vacuum = parakeet.sample._regions.VACUUM
         holes = [r.id for r in regions if r.material == vacuum]
         if holes:

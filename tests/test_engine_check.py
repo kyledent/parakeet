@@ -29,6 +29,7 @@ def fake_engine(
     table=True,
     potential=True,
     partial=True,
+    convex=True,
 ):
     class Masker:
         pass
@@ -36,7 +37,14 @@ def fake_engine(
     if seed:
         Masker.set_seed = lambda self, value: None
     if partial:
-        Masker.set_partial_volume = lambda self, n: None
+
+        def set_partial_volume(self, n):
+            pass
+
+        set_partial_volume.__doc__ = "Spheres and cuboids are exact for any n > 0"
+        Masker.set_partial_volume = set_partial_volume
+    if convex:
+        Masker.set_convex = lambda self, *args: None
 
     class IceParameters:
         def __init__(self):
@@ -93,6 +101,7 @@ def test_an_old_engine_is_refused_by_name():
         table=False,
         potential=False,
         partial=False,
+        convex=False,
     )
     assert not any(engine_features(old).values())
     with pytest.raises(EngineFeatureError) as error:

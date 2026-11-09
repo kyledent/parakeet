@@ -940,14 +940,15 @@ def to_json(medium, regions, containment="refuse"):
     return json.dumps(doc)
 
 
-def engine_shape(region):
+def engine_shape(region, convex=False):
     """
     The shape the multislice engine renders for a region: (kind, geometry) for
     an axis-aligned box, a sphere (or an ellipsoid that is one: equal
-    semi-axes, no cuts) or a cylinder
+    semi-axes, no cuts) or a cylinder; and, when the engine has convex regions
+    (convex=True), ("convex", convex_form(region)) for every other kind
 
     Raises:
-        RegionsError: Naming any other region, which needs the label raster
+        RegionsError: Naming a region the engine cannot render
 
     """
     g = region.geometry
@@ -964,12 +965,107 @@ def engine_shape(region):
             "centre_A": g["centre_A"],
             "radius_A": float(g["semi_axes_A"][0]),
         }
+    if convex:
+        return "convex", convex_form(region)
     what = "rotated box" if region.kind == "box" else region.kind
     raise RegionsError(
-        "Region %r (%s) cannot be rendered by the multislice engine yet: it needs a "
-        "per-slice label raster. Axis-aligned boxes, spheres and cylinders can be "
-        "rendered" % (region.id, what)
+        "Region %r (%s) cannot be rendered by this multislice engine: it needs the "
+        "engine feature convex_regions. Axis-aligned boxes, spheres and cylinders "
+        "can be rendered" % (region.id, what)
     )
+
+
+def _ellipsoid_set(centre, R, a, cuts, cut_shift=0.0):
+    """The convex set of an ellipsoid (axes R, semi-axes a) and its cuts"""
+    A = R @ np.diag(1.0 / np.asarray(a, dtype=float) ** 2) @ R.T
+    planes = [
+        (np.asarray(c["normal"], float), float(c["offset_A"] - cut_shift + c["normal"] @ centre))
+        for c in cuts
+    ]
+    return {"A": A, "centre": np.asarray(centre, float), "planes": planes}
+
+
+def convex_form(region):
+    """
+    A region as the engine's convex set: an optional quadric
+    (p - centre)^T A (p - centre) <= 1 intersected with half-spaces n . p <= d,
+    in the sample frame, less an optional inner set of the same form (a shell)::
+
+        {"A": 3 x 3 or None, "centre": (3,), "planes": [(n, d), ...],
+         "inner": None or {"A", "centre", "planes"}}
+
+    `convex_contains` tests points against it; it agrees with `contains`
+    everywhere but on the surfaces.
+
+    """
+    g = region.geometry
+    if region.kind == "box":
+        c, h, R = g["centre_A"], g["half_lengths_A"], g["axes"]
+        planes = []
+        for k in range(3):
+            a = R[:, k]
+            planes += [(a, float(h[k] + a @ c)), (-a, float(h[k] - a @ c))]
+        form = {"A": None, "centre": np.asarray(c, float), "planes": planes}
+    elif region.kind in ("sphere", "ellipsoid", "ellipsoidal_shell"):
+        if region.kind == "sphere":
+            c, R, a, cuts = g["centre_A"], np.eye(3), [g["radius_A"]] * 3, []
+        else:
+            c, R, a, cuts = g["centre_A"], g["axes"], g["semi_axes_A"], g["cuts"]
+        form = _ellipsoid_set(c, R, a, cuts)
+        if region.kind == "ellipsoidal_shell":
+            inner = g["inner"]
+            a_in = (
+                g["semi_axes_A"] * inner["factor"]
+                if inner["mode"] == "scale"
+                else g["semi_axes_A"] - inner["thickness_A"]
+            )
+            form["inner"] = _ellipsoid_set(c, R, a_in, cuts, g["cut_offset_A"])
+    elif region.kind == "cylinder":
+        c, a, L = np.asarray(g["centre_A"], float), g["axis"], g["length_A"]
+        form = {
+            "A": (np.eye(3) - np.outer(a, a)) / g["radius_A"] ** 2,
+            "centre": c,
+            "planes": [(a, float(L / 2 + a @ c)), (-a, float(L / 2 - a @ c))],
+        }
+    elif region.kind == "slab":
+        o, n, u, v, t = (g["origin_A"], g["normal"], g["u_axis"], g["v_axis"], g["thickness_A"])
+        planes = [(n, float(t / 2 + n @ o)), (-n, float(t / 2 - n @ o))]
+        fp = g["footprint"]
+        A, centre = None, np.asarray(o, float)
+        if fp["kind"] == "rectangle":
+            for ax, half in ((u, fp["half_u_A"]), (v, fp["half_v_A"])):
+                planes += [(ax, float(half + ax @ o)), (-ax, float(half - ax @ o))]
+        else:
+            cu, cv = fp["centre_uv_A"]
+            centre = o + cu * u + cv * v
+            A = (np.eye(3) - np.outer(n, n)) / fp["radius_A"] ** 2
+        for c in fp["clips"]:
+            m = c["normal_uv"][0] * u + c["normal_uv"][1] * v
+            planes.append((m, float(c["offset_A"] + m @ o)))
+        form = {"A": A, "centre": centre, "planes": planes}
+    else:
+        raise RegionsError("Region %r (%s) has no convex form" % (region.id, region.kind))
+    form.setdefault("inner", None)
+    return form
+
+
+def convex_contains(form, points):
+    """Whether points are in a convex_form (the engine's semantics, on the CPU)"""
+    p = np.asarray(points, dtype="float64").reshape(-1, 3)
+
+    def inside(f):
+        ok = np.ones(len(p), dtype=bool)
+        if f["A"] is not None:
+            d = p - f["centre"]
+            ok &= np.einsum("ij,jk,ik->i", d, f["A"], d) <= 1
+        for n, b in f["planes"]:
+            ok &= p @ n <= b
+        return ok
+
+    result = inside(form)
+    if form["inner"] is not None:
+        result &= ~inside(form["inner"])
+    return result
 
 
 def materials_used(medium, regions) -> Dict[str, List[str]]:
