@@ -6,6 +6,7 @@
 #
 """The elastic scattering a band-limited grid cannot hold (parakeet.elastic)"""
 
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -289,3 +290,31 @@ def test_the_zero_loss_depth_is_unchanged_by_sharing_the_paths():
         stride=8,
     )
     assert np.array_equal(sim.optical_depth(0, MARGIN), expect)
+
+
+def test_the_zero_loss_record_names_each_materials_mean_free_path(monkeypatch):
+    # Water from the ice parameters' default, the glass sphere's own value:
+    # the record says which was set and which fell back to Parakeet's default
+    from parakeet.simulate._optics import zero_loss_record
+
+    sim = simulator(
+        sphere_doc("glass"),
+        materials={"glass": {"density": 1.0, "inelastic_mfp_A": 2000.0}},
+        monkeypatch=monkeypatch,
+    )
+    mfp = sim.inelastic_mean_free_paths()
+    assert mfp["water"] == (parakeet.inelastic.MEAN_FREE_PATH, "default")
+    assert mfp["glass"] == (2000.0, "set")
+    paths = sim.path_maps(0, MARGIN)
+    tau = sim.optical_depth(0, MARGIN)
+    assert np.allclose(tau, paths["glass"] / 2000.0, rtol=1e-12, atol=0)
+    fraction = parakeet.inelastic.filter_transmission_tau(tau, slit_width=20.0, zlp_fwhm=1.0)
+    record = zero_loss_record(mfp, paths, 20.0, 1.0, fraction)
+    glass = record["materials"]["glass"]
+    assert glass["inelastic_mfp_A"] == 2000.0 and glass["source"] == "set"
+    assert glass["mean_path_A"] == pytest.approx(float(paths["glass"].mean()), rel=1e-12)
+    assert record["slit_eV"] == 20.0 and record["zlp_fwhm_eV"] == 1.0
+    assert record["default_mfp_A"] == parakeet.inelastic.MEAN_FREE_PATH
+    assert record["electron_fraction"]["max"] == pytest.approx(float(fraction.max()), rel=1e-12)
+    assert record["electron_fraction"]["min"] < record["electron_fraction"]["max"]
+    json.dumps(record)  # the optics logs it as JSON

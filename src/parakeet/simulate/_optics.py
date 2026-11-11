@@ -43,6 +43,50 @@ __all__ = ["optics"]
 logger = logging.getLogger(__name__)
 
 
+def zero_loss_record(mean_free_paths, path_maps, slit_width, zlp_fwhm, fraction):
+    """
+    What the zero-loss filter did to a frame of a sample with regions: its
+    model and settings, and per material on the frame's paths the inelastic
+    mean free path it used and whether the material set it
+
+    Args:
+        mean_free_paths: {material: (A, "set" | "default")}
+        path_maps: {material: path length map (A)}
+        slit_width: The slit (eV)
+        zlp_fwhm: The zero-loss peak's width (eV)
+        fraction: The electron fraction passed (a map)
+
+    """
+    fraction = np.asarray(fraction, dtype="float64")
+    return {
+        "model": (
+            "inelastic.filter_transmission_tau: Poisson multiples of a "
+            "%g eV plasmon (FWHM %g eV x sqrt(n)) and the zero-loss peak, each "
+            "weighted by its Gaussian share inside the slit"
+            % (
+                parakeet.inelastic.ICE_PLASMON_ENERGY,
+                parakeet.inelastic.ICE_PLASMON_FWHM,
+            )
+        ),
+        "slit_eV": float(slit_width),
+        "zlp_fwhm_eV": float(zlp_fwhm),
+        "default_mfp_A": float(parakeet.inelastic.MEAN_FREE_PATH),
+        "materials": {
+            name: {
+                "inelastic_mfp_A": mean_free_paths[name][0],
+                "source": mean_free_paths[name][1],
+                "mean_path_A": float(np.mean(length)),
+            }
+            for name, length in path_maps.items()
+        },
+        "electron_fraction": {
+            "mean": float(fraction.mean()),
+            "min": float(fraction.min()),
+            "max": float(fraction.max()),
+        },
+    }
+
+
 class OpticsImageSimulator(object):
     """
     A class to do the actual simulation
@@ -110,6 +154,24 @@ class OpticsImageSimulator(object):
         self._path_maps = ((index, margin), maps)
         return maps
 
+    def inelastic_mean_free_paths(self):
+        """
+        Each material's inelastic mean free path (A) and where it came from:
+        {name: (value, "set" | "default")}, "set" when the material (or, for
+        water, the ice parameters) gives inelastic_mfp_A, "default" when it is
+        parakeet.inelastic.MEAN_FREE_PATH (amorphous ice at 300 keV)
+
+        """
+        default = parakeet.inelastic.MEAN_FREE_PATH
+        ice = self.simulation.get("ice_parameters") or {}
+        own = {"water": ice.get("inelastic_mfp_A")}
+        for name, m in (self.simulation.get("materials") or {}).items():
+            own[name] = m.get("inelastic_mfp_A")
+        return {
+            name: (float(v), "set") if v else (float(default), "default")
+            for name, v in own.items()
+        }
+
     def optical_depth(self, index, margin):
         """
         The per-pixel inelastic optical depth of frame index, for a sample with
@@ -117,11 +179,7 @@ class OpticsImageSimulator(object):
         (parakeet.inelastic.optical_depth_map)
 
         """
-        default = parakeet.inelastic.MEAN_FREE_PATH
-        ice = self.simulation.get("ice_parameters") or {}
-        mfp = {"water": ice.get("inelastic_mfp_A") or default}
-        for name, m in (self.simulation.get("materials") or {}).items():
-            mfp[name] = m.get("inelastic_mfp_A") or default
+        mfp = {k: v for k, (v, _) in self.inelastic_mean_free_paths().items()}
         detector = self.microscope.detector
         tau = np.zeros((detector.ny + 2 * margin, detector.nx + 2 * margin))
         for material, length in self.path_maps(index, margin).items():
@@ -393,6 +451,7 @@ class OpticsImageSimulator(object):
         # The elastic scattering the grid cannot hold leaves the wave: an
         # amplitude factor from each pixel's path through each material
         self.elastic_out_record = None
+        self.zero_loss_record = None
         intensity_before = None
         if self.simulation.get("elastic_out"):
             tau_el, record = self.elastic_out(index, margin)
@@ -462,6 +521,18 @@ class OpticsImageSimulator(object):
                     slit_width=slit_width,
                     zlp_fwhm=zlp_fwhm,
                 )
+                record = zero_loss_record(
+                    self.inelastic_mean_free_paths(),
+                    self.path_maps(index, margin),
+                    slit_width,
+                    zlp_fwhm,
+                    electron_fraction,
+                )
+                record["frame"] = int(index)
+                self.zero_loss_record = record
+                if self.elastic_out_record is not None:
+                    self.elastic_out_record["zero_loss"] = record
+                logger.info("zero_loss: %s" % json.dumps(record))
             else:
                 electron_fraction = parakeet.inelastic.filter_transmission(
                     shape,
