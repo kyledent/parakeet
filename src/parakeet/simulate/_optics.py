@@ -10,6 +10,7 @@
 #
 
 import copy
+import json
 import logging
 import numpy as np
 import parakeet.config
@@ -70,12 +71,17 @@ class OpticsImageSimulator(object):
         self.device = device
         self.gpu_id = gpu_id
 
-    def optical_depth(self, index, margin):
+    def path_maps(self, index, margin):
         """
-        The per-pixel inelastic optical depth of frame index, for a sample with
-        regions (parakeet.inelastic.optical_depth_map)
+        The path length (A) through each material of every pixel of frame
+        index, for a sample with regions (parakeet.inelastic.path_length_maps),
+        computed once per frame and shared by the zero-loss filter and the
+        elastic-out term
 
         """
+        cache = getattr(self, "_path_maps", None)
+        if cache is not None and cache[0] == (index, margin):
+            return cache[1]
         import parakeet.config
         import parakeet.sample._new
         import parakeet.sample._regions
@@ -84,15 +90,9 @@ class OpticsImageSimulator(object):
             parakeet.config.SampleRegions(**self.sample["regions"])
         )
         regions = parakeet.sample._regions.parse(document)
-        default = parakeet.inelastic.MEAN_FREE_PATH
-        ice = self.simulation.get("ice_parameters") or {}
-        mfp = {"water": ice.get("inelastic_mfp_A") or default}
-        for name, m in (self.simulation.get("materials") or {}).items():
-            mfp[name] = m.get("inelastic_mfp_A") or default
         detector = self.microscope.detector
-        return parakeet.inelastic.optical_depth_map(
+        maps = parakeet.inelastic.path_length_maps(
             regions,
-            mfp,
             self.sample["shape"],
             self.sample["centre"],
             self.scan.orientation[index],
@@ -103,7 +103,129 @@ class OpticsImageSimulator(object):
             margin,
             detector.pixel_size,
             stride=self.simulation.get("inelastic_map_stride", 8),
+            # The elastic-out term needs edges exact: trace every crossing
+            # analytically. Without it the paths keep their sampled form
+            exact=bool(self.simulation.get("elastic_out")),
         )
+        self._path_maps = ((index, margin), maps)
+        return maps
+
+    def optical_depth(self, index, margin):
+        """
+        The per-pixel inelastic optical depth of frame index, for a sample with
+        regions: each material's path over its inelastic mean free path
+        (parakeet.inelastic.optical_depth_map)
+
+        """
+        default = parakeet.inelastic.MEAN_FREE_PATH
+        ice = self.simulation.get("ice_parameters") or {}
+        mfp = {"water": ice.get("inelastic_mfp_A") or default}
+        for name, m in (self.simulation.get("materials") or {}).items():
+            mfp[name] = m.get("inelastic_mfp_A") or default
+        detector = self.microscope.detector
+        tau = np.zeros((detector.ny + 2 * margin, detector.nx + 2 * margin))
+        for material, length in self.path_maps(index, margin).items():
+            tau += length / mfp[material]
+        return tau
+
+    def elastic_out(self, index, margin):
+        """
+        The elastic-out optical depth of frame index (parakeet.elastic): each
+        material's path times the inverse mean free path of the scattering the
+        band-limited grid cannot hold, lost outside the objective aperture and
+        (halo off) inside it as well
+
+        Returns:
+            (tau, record): the (ny + 2 margin, nx + 2 margin) optical depth, to
+            be applied as exp(-tau / 2) on the exit wave's amplitude, and the
+            constants used, for provenance
+
+        """
+        import parakeet.elastic
+        import parakeet.simulate.engine
+
+        settings = self.simulation["elastic_out"]
+        if not (self.sample or {}).get("regions"):
+            raise ValueError(
+                "simulation.elastic_out needs a sample with regions: it applies "
+                "each material's path through every pixel"
+            )
+        band_limited = parakeet.simulate.engine.engine_band_limited()
+        if not band_limited:
+            raise ValueError(
+                "simulation.elastic_out is valid only with the band-limited "
+                "potential (MULTEM_BANDLIMITED_POTENTIAL=1): without it the "
+                "potential above the grid's Nyquist frequency aliases back into "
+                "the grid, the multislice already scatters part of that flux, and "
+                "the term would count it twice"
+            )
+        detector = self.microscope.detector
+        energy = self.microscope.beam.energy
+        lam = parakeet.elastic.wavelength(energy)
+        q_acc = self.microscope.objective_aperture_cutoff_freq
+        q_acc = np.inf if q_acc is None else float(q_acc)
+        ice = self.simulation.get("ice_parameters") or {}
+        densities = {
+            "water": ice.get("number_density_A3")
+            or parakeet.elastic.water_number_density(ice.get("density", 0.94))
+        }
+        for name, m in (self.simulation.get("materials") or {}).items():
+            densities[name] = m.get("number_density_A3")
+        paths = self.path_maps(index, margin)
+        tau = np.zeros((detector.ny + 2 * margin, detector.nx + 2 * margin))
+        constants = {}
+        uncovered = []
+        for material, length in paths.items():
+            n = densities.get(material)
+            if n is None:
+                uncovered.append(material)
+                continue
+            mu_lost, mu_band = parakeet.elastic.missing_cross_sections(
+                n, energy, detector.pixel_size, q_acc, settings["model"]
+            )
+            mu = mu_lost + mu_band  # halo off: the band is removed as well
+            tau += length * mu
+            constants[material] = {
+                "lambda_lost_A": 1 / mu_lost if mu_lost > 0 else None,
+                "lambda_band_A": 1 / mu_band if mu_band > 0 else None,
+                "lambda_applied_A": 1 / mu if mu > 0 else None,
+                "tail_fraction": parakeet.elastic.tail_fraction(
+                    n,
+                    energy,
+                    min(q_acc, parakeet.elastic.grid_q(detector.pixel_size)),
+                    settings["model"],
+                ),
+            }
+        if uncovered:
+            logger.warning(
+                "elastic_out: no number_density_A3 for %s, so no elastic-out term "
+                "for %s; the render under-counts their loss"
+                % (", ".join(uncovered), "it" if len(uncovered) == 1 else "them")
+            )
+        record = {
+            "model": settings["model"],
+            "halo": settings["halo"],
+            "regime": "band-limited potential (MULTEM_BANDLIMITED_POTENTIAL=1)",
+            "energy_keV": energy,
+            "wavelength_A": lam,
+            "pixel_size_A": detector.pixel_size,
+            "q_N": parakeet.elastic.grid_q(detector.pixel_size),
+            "theta_g_mrad": lam * parakeet.elastic.grid_q(detector.pixel_size) * 1e3,
+            "q_acc": None if not np.isfinite(q_acc) else q_acc,
+            "beta_mrad": None if not np.isfinite(q_acc) else lam * q_acc * 1e3,
+            "materials": constants,
+            "materials_without_composition": uncovered,
+            "paths": "exact (every crossing traced; shared with zero_loss)",
+            "approximations": [
+                "independent atoms beyond what the grid draws (S(q) = 1)",
+                "the material's random field taken to draw its own scattering "
+                "within the grid (W^2 dsigma below q_N)",
+                "halo off: scattering inside the aperture but outside the grid "
+                "is removed as if lost",
+                "single kinematic scattering; losses multiply",
+            ],
+        }
+        return tau, record
 
     def __call__(self, index):
         """
@@ -200,6 +322,22 @@ class OpticsImageSimulator(object):
 
         # Set the input wave
         psi = self.exit_wave.data[index]
+
+        # The elastic scattering the grid cannot hold leaves the wave: an
+        # amplitude factor from each pixel's path through each material
+        self.elastic_out_record = None
+        if self.simulation.get("elastic_out"):
+            tau_el, record = self.elastic_out(index, margin)
+            if tau_el.shape != psi.shape:
+                raise RuntimeError(
+                    "elastic_out: path maps %s do not match the exit wave %s"
+                    % (tau_el.shape, psi.shape)
+                )
+            psi = psi * np.exp(-0.5 * tau_el).astype(psi.dtype)
+            record["frame"] = int(index)
+            record["mean_transmission"] = float(np.mean(np.exp(-tau_el)))
+            self.elastic_out_record = record
+            logger.info("elastic_out: %s" % json.dumps(record))
 
         microscope = copy.deepcopy(self.microscope)
 

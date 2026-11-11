@@ -246,7 +246,9 @@ def path_length_maps(
             of a region's or the sample shape's surface is found analytically
             (`_regions.boundary_crossings`), and each piece between crossings
             takes the material that owns its midpoint, so a path is exact to
-            rounding. The rule for which pixels are traced is the same
+            rounding. Every pixel under a curved region's projection is traced
+            too, since interpolation between corner rays that agree would not
+            follow the surface's curvature inside a cell
 
     Returns:
         dict: material name -> (ny + 2 margin, nx + 2 margin) array of A
@@ -395,7 +397,13 @@ def path_length_maps(
             pl = rot.apply(box - centre) + centre - position
             x0, y0 = pl[:, :2].min(axis=0)
             x1, y1 = pl[:, :2].max(axis=0)
-            if min(x1 - x0, y1 - y0, R.thinnest(r)) < 2 * cell:
+            # Exact paths: under a curved surface a cell's four corner rays can
+            # agree while the path still varies inside it (a sphere's centre
+            # cell is symmetric), so trace every pixel a curved region's
+            # projection touches. A planes-only region's path is linear inside
+            # a cell that no edge crosses, and the corners catch the edges
+            curved = exact and R._planes_only(r) is None
+            if curved or min(x1 - x0, y1 - y0, R.thinnest(r)) < 2 * cell:
                 i0 = int(np.floor((x0 - origin[0]) / pixel_size)) + margin - 1
                 i1 = int(np.ceil((x1 - origin[0]) / pixel_size)) + margin + 1
                 j0 = int(np.floor((y0 - origin[1]) / pixel_size)) + margin - 1

@@ -1013,6 +1013,60 @@ class Material(IceParameters):
         ),
     )
 
+    number_density_A3: Optional[Dict[str, float]] = Field(
+        None,
+        description=(
+            "The material's physical composition: element symbol -> atoms per "
+            "A^3, hydrogens included. Used by simulation.elastic_out for the "
+            "scattering the grid cannot hold; a material without it gets no "
+            "such term (the render says so). Not the engine's density, which "
+            "counts water-equivalent molecules"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_number_density(self):
+        if self.number_density_A3 is None:
+            return self
+        import parakeet.elastic
+
+        for element, n in self.number_density_A3.items():
+            if element not in parakeet.elastic.ATOMIC_NUMBER:
+                raise ValueError(
+                    "number_density_A3: unknown element %r (known: %s)"
+                    % (element, ", ".join(parakeet.elastic.ATOMIC_NUMBER))
+                )
+            if not (n >= 0 and n < float("inf")):
+                raise ValueError("number_density_A3[%s] must be finite and >= 0" % element)
+        return self
+
+
+class ElasticOut(BaseModel):
+    """
+    The elastic scattering a band-limited multislice grid cannot hold
+    (parakeet.elastic): an amplitude loss on the exit wave from each pixel's
+    path through each material
+
+    """
+
+    model: Literal["iam", "lenz"] = Field(
+        "iam",
+        description=(
+            "The cross-section: iam, independent atoms with the International "
+            "Tables Vol. C Table 4.3.2.2 scattering factors; lenz, the screened "
+            "Rutherford form (an analytic check)"
+        ),
+    )
+
+    halo: Literal[False] = Field(
+        False,
+        description=(
+            "False: the scattering the aperture would pass but the grid cannot "
+            "hold is removed as well, as if lost (an upper bound on the loss). "
+            "Returning it displaced is not implemented yet"
+        ),
+    )
+
 
 class Simulation(BaseModel):
     """
@@ -1121,6 +1175,15 @@ class Simulation(BaseModel):
 
     mp_loss_position: MPLPosition = Field(
         "peak", description="The MPL energy filter position"
+    )
+
+    elastic_out: Optional[ElasticOut] = Field(
+        None,
+        description=(
+            "Remove the elastic scattering the grid cannot hold, per material "
+            "(parakeet.elastic; needs sample.regions and the band-limited "
+            "potential). None (the default) leaves the exit wave as it is"
+        ),
     )
 
     sensitivity_coefficient: float = Field(

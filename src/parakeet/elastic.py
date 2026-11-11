@@ -1,0 +1,283 @@
+#
+# parakeet.elastic.py
+#
+# Copyright (C) 2026 Diamond Light Source and Rosalind Franklin Institute
+#
+# This code is distributed under the GPLv3 license, a copy of
+# which is included in the root directory of this package.
+#
+"""
+Elastic scattering that a multislice grid cannot hold.
+
+A grid of spacing dx holds spatial frequencies only to its Nyquist frequency
+q_N = 1/(2 dx), that is scattering angles to theta_g = lambda q_N (6.56 mrad at
+300 kV and 1.5 A/px). A material scatters beyond that as well, and with the
+band-limited potential (MULTEM_BANDLIMITED_POTENTIAL=1) the engine also
+attenuates what it does draw, by its window W(q): flat to q_N/2, a raised
+cosine to zero at q_N. Kinematically the simulation therefore scatters
+W(q)^2 dsigma/dOmega below q_N and nothing above, and every electron the real
+material would scatter beyond that is kept in the exit wave instead.
+
+This module gives, per material, the cross-section the simulation leaves out,
+split by the objective aperture's acceptance q_acc = beta / lambda:
+
+    lost:  int_{q > q_acc} (1 - w(q)) dsigma    (outside the aperture)
+    band:  int_{q < q_acc} (1 - w(q)) dsigma    (inside it; displaced, not lost)
+
+with w(q) = W(q)^2 below q_N and 0 above. With no aperture, q_acc is infinite
+and everything is band.
+
+The cross-section is that of independent atoms. The default model, "iam",
+uses the five-Gaussian electron scattering factors of International Tables
+for Crystallography Vol. C, Table 4.3.2.2 (Peng et al. 1996, Acta Cryst A52,
+257), as gemmi ships them, with the relativistic factor gamma^2:
+dsigma/dOmega = gamma^2 |f(s)|^2, s = theta / (2 lambda) = q / 2. The fit is
+valid to s = 2 1/A; beyond it the Gaussians fall faster than the real
+theta^-4 tail, so the cross-section there is underestimated
+(`tail_fraction` reports how much lies there). "lenz" is the screened
+Rutherford form (Egerton, Electron Energy-Loss Spectroscopy in the Electron
+Microscope, 3rd edn, sec. 3.1), the analytic check.
+
+Stated approximations: atoms scatter independently (S(q) = 1; the
+intermolecular structure factor and bonding are left out); the part inside
+the grid is taken to be what the material's random field already draws, which
+holds for a texture calibrated to the material (the water presets) and not
+for a placeholder; scattering is single and kinematic, and losses multiply.
+
+"""
+
+import math
+
+import numpy as np
+
+__all__ = [
+    "wavelength",
+    "gamma",
+    "grid_q",
+    "window",
+    "cross_section",
+    "missing_cross_sections",
+    "water_number_density",
+    "tail_fraction",
+    "MODELS",
+]
+
+MODELS = ("iam", "lenz")
+
+# Physical constants (CODATA 2018)
+ELECTRON_REST_ENERGY_KEV = 510.99895
+BOHR_RADIUS_A = 0.529177210903
+AVOGADRO = 6.02214076e23
+WATER_MOLAR_MASS = 18.01528  # g/mol
+
+# The upper limit of validity of the Table 4.3.2.2 fit, s = sin(theta)/lambda
+PENG_S_MAX = 2.0  # 1/A
+
+ATOMIC_NUMBER = {
+    "H": 1,
+    "C": 6,
+    "N": 7,
+    "O": 8,
+    "Na": 11,
+    "Mg": 12,
+    "P": 15,
+    "S": 16,
+    "Cl": 17,
+    "K": 19,
+    "Ca": 20,
+    "Fe": 26,
+    "Zn": 30,
+    "Au": 79,
+}
+
+
+def wavelength(energy_kev):
+    """The relativistic electron wavelength (A) at a beam energy (keV)"""
+    v = energy_kev * 1e3
+    return 12.2643247 / math.sqrt(v * (1 + 0.978476e-6 * v))
+
+
+def gamma(energy_kev):
+    """The relativistic mass factor m/m0 at a beam energy (keV)"""
+    return 1 + energy_kev / ELECTRON_REST_ENERGY_KEV
+
+
+def grid_q(pixel_size):
+    """The grid's Nyquist frequency q_N = 1/(2 dx) (1/A)"""
+    return 0.5 / pixel_size
+
+
+def window(q, pixel_size):
+    """
+    The band-limited potential's window W(q) (python-multem README): 1 to
+    q_N/2, a raised cosine to 0 at q_N, 0 beyond
+
+    """
+    q = np.asarray(q, dtype="float64")
+    qn = grid_q(pixel_size)
+    q1 = 0.5 * qn
+    w = np.where(q <= q1, 1.0, 0.5 * (1 + np.cos(np.pi * (q - q1) / (qn - q1))))
+    return np.where(q >= qn, 0.0, w)
+
+
+def _peng(element):
+    import gemmi
+
+    c = gemmi.Element(element).c4322
+    a, b = np.asarray(c.a, dtype="float64"), np.asarray(c.b, dtype="float64")
+    if not np.any(a):
+        raise ValueError(
+            "no electron scattering factors (Table 4.3.2.2) for element %r" % element
+        )
+    return a, b
+
+
+def _iam_closed(element, lam, g, q_lo, q_hi):
+    """int_{q_lo}^{q_hi} gamma^2 f(s)^2 dOmega, closed form (A^2)"""
+    a, b = _peng(element)
+    s_lo = 0.5 * q_lo
+    B = b[:, None] + b[None, :]
+    aa = a[:, None] * a[None, :]
+    term_lo = np.exp(-B * s_lo**2) / (2 * B)
+    term_hi = 0.0 if not np.isfinite(q_hi) else np.exp(-B * (0.5 * q_hi) ** 2) / (2 * B)
+    # dOmega = 2 pi theta dtheta = 2 pi lam^2 q dq = 8 pi lam^2 s ds
+    return float(8 * np.pi * lam**2 * g**2 * np.sum(aa * (term_lo - term_hi)))
+
+
+def _lenz_closed(element, lam, g, q_lo, q_hi):
+    """The Lenz (screened Rutherford) cross-section between q_lo and q_hi (A^2)"""
+    Z = ATOMIC_NUMBER[element]
+    k0 = 2 * np.pi / lam
+    theta0 = Z ** (1.0 / 3.0) / (k0 * BOHR_RADIUS_A)
+    pre = 4 * np.pi * g**2 * Z**2 / (BOHR_RADIUS_A**2 * k0**4)
+    t_lo = lam * q_lo
+    hi = 0.0 if not np.isfinite(q_hi) else 1.0 / ((lam * q_hi) ** 2 + theta0**2)
+    return float(pre * (1.0 / (t_lo**2 + theta0**2) - hi))
+
+
+def _dsigma_dq(element, lam, g, q, model):
+    """dsigma/dq (A^2 A), for the numerical part"""
+    q = np.asarray(q, dtype="float64")
+    if model == "iam":
+        a, b = _peng(element)
+        s = 0.5 * q
+        f = np.sum(a[:, None] * np.exp(-b[:, None] * s[None, :] ** 2), axis=0)
+        return g**2 * f**2 * 2 * np.pi * lam**2 * q
+    Z = ATOMIC_NUMBER[element]
+    k0 = 2 * np.pi / lam
+    theta0 = Z ** (1.0 / 3.0) / (k0 * BOHR_RADIUS_A)
+    pre = 4 * g**2 * Z**2 / (BOHR_RADIUS_A**2 * k0**4)
+    theta = lam * q
+    return pre / (theta**2 + theta0**2) ** 2 * 2 * np.pi * lam**2 * q
+
+
+def cross_section(element, energy_kev, q_lo, q_hi=np.inf, model="iam"):
+    """
+    The elastic cross-section of one atom between spatial frequencies q_lo and
+    q_hi (1/A; scattering angle theta = lambda q), A^2
+
+    Args:
+        element: The element symbol
+        energy_kev: The beam energy (keV)
+        q_lo, q_hi: The limits (q_hi may be inf)
+        model: "iam" (Table 4.3.2.2 scattering factors) or "lenz"
+
+    """
+    if model not in MODELS:
+        raise ValueError("elastic model must be one of %s" % (MODELS,))
+    if not (0 <= q_lo <= q_hi):
+        raise ValueError("cross_section needs 0 <= q_lo <= q_hi")
+    lam = wavelength(energy_kev)
+    g = gamma(energy_kev)
+    closed = _iam_closed if model == "iam" else _lenz_closed
+    return closed(element, lam, g, q_lo, q_hi)
+
+
+def _windowed_part(element, lam, g, q_lo, q_hi, pixel_size, model, n=256):
+    """int over [q_lo, q_hi] within the window's slope of W(q)^2 dsigma (A^2)"""
+    qn = grid_q(pixel_size)
+    q1 = 0.5 * qn
+    lo, hi = max(q_lo, q1), min(q_hi, qn)
+    flat_hi = min(q_hi, q1)
+    total = 0.0
+    if flat_hi > q_lo:  # W = 1 below q_N/2
+        closed = _iam_closed if model == "iam" else _lenz_closed
+        total += closed(element, lam, g, q_lo, flat_hi)
+    if hi > lo:
+        x, w = np.polynomial.legendre.leggauss(n)
+        q = 0.5 * (hi - lo) * x + 0.5 * (hi + lo)
+        total += float(
+            0.5
+            * (hi - lo)
+            * np.sum(w * window(q, pixel_size) ** 2 * _dsigma_dq(element, lam, g, q, model))
+        )
+    return total
+
+
+def missing_cross_sections(
+    number_density, energy_kev, pixel_size, q_acc=np.inf, model="iam"
+):
+    """
+    The inverse mean free paths (1/A) of the elastic scattering a band-limited
+    multislice simulation of a material leaves out, outside and inside an
+    aperture
+
+    Args:
+        number_density: Element -> atoms per A^3
+        energy_kev: The beam energy (keV)
+        pixel_size: The simulation's grid spacing (A)
+        q_acc: The aperture's acceptance beta / lambda (1/A); inf with none
+        model: "iam" or "lenz"
+
+    Returns:
+        (mu_lost, mu_band): 1/lambda for scattering beyond q_acc and below it
+
+    """
+    if model not in MODELS:
+        raise ValueError("elastic model must be one of %s" % (MODELS,))
+    if not q_acc > 0:
+        raise ValueError("the aperture's acceptance must be positive")
+    lam = wavelength(energy_kev)
+    g = gamma(energy_kev)
+    closed = _iam_closed if model == "iam" else _lenz_closed
+    mu_lost = 0.0
+    mu_band = 0.0
+    for element, n in number_density.items():
+        if n < 0:
+            raise ValueError("negative number density for %s" % element)
+        if n == 0:
+            continue
+        # What the simulation draws itself (W^2 dsigma below q_N) it scatters
+        # itself, and below q_acc Parakeet's aperture mask removes its share
+        if np.isfinite(q_acc):
+            mu_lost += n * (
+                closed(element, lam, g, q_acc, np.inf)
+                - _windowed_part(element, lam, g, q_acc, np.inf, pixel_size, model)
+            )
+        mu_band += n * (
+            closed(element, lam, g, 0.0, q_acc)
+            - _windowed_part(element, lam, g, 0.0, q_acc, pixel_size, model)
+        )
+    return mu_lost, mu_band
+
+
+def tail_fraction(number_density, energy_kev, q_lo, model="iam"):
+    """
+    The share of the cross-section above q_lo that lies beyond the Table
+    4.3.2.2 fit's validity (s > 2 1/A, q > 4 1/A), where the fit
+    underestimates it. Weighted by the number density.
+
+    """
+    q_max = 2 * PENG_S_MAX
+    above = 0.0
+    beyond = 0.0
+    for element, n in number_density.items():
+        above += n * cross_section(element, energy_kev, q_lo, np.inf, model)
+        beyond += n * cross_section(element, energy_kev, max(q_lo, q_max), np.inf, model)
+    return beyond / above if above > 0 else 0.0
+
+
+def water_number_density(density):
+    """H2O at a mass density (g/cm^3): element -> atoms per A^3"""
+    n = density * AVOGADRO / WATER_MOLAR_MASS * 1e-24
+    return {"H": 2 * n, "O": n}

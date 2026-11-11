@@ -73,6 +73,7 @@ def render(
     ice_parameters=None,
     origin=(0, 0),
     simulation=None,
+    scan=None,
 ):
     directory.mkdir()
     # MULTEM slices only where there are atoms: two hydrogen atoms near a
@@ -108,7 +109,7 @@ def render(
             },
         },
         "sample": sample,
-        "scan": {"mode": "still", "num_images": 1},
+        "scan": scan or {"mode": "still", "num_images": 1},
         "simulation": {
             "ice": True,
             "seed": seed,
@@ -412,6 +413,77 @@ def test_the_zero_loss_filter_follows_each_materials_path(tmp_path):
     # The intensity before the filter is ~1 in both halves (a weak phase object)
     assert water == pytest.approx(expect_water, rel=0.01)
     assert dense == pytest.approx(expect_dense, rel=0.01)
+
+
+def elastic_out_images(directory, regions, materials, tilt):
+    """The same exit wave through the optics without and with elastic_out"""
+    scan = (
+        None
+        if tilt == 0
+        else {"mode": "tilt_series", "start_angle": tilt, "step_angle": 0, "num_images": 1}
+    )
+    _, path = render(directory, regions, materials=materials, scan=scan)
+    d = path.parent
+    images = {}
+    for name, elastic_out in (("off", None), ("on", {"model": "iam"})):
+        cfg = yaml.safe_load(path.read_text())
+        cfg["simulation"]["elastic_out"] = elastic_out
+        cfg["output"] = {"dtype": "float32"}  # float16 rounds at ~5e-4
+        c = d / ("config_%s.yaml" % name)
+        c.write_text(yaml.safe_dump(cfg))
+        parakeet.simulate.optics(str(c), str(d / "exit_wave.h5"), str(d / ("%s.h5" % name)))
+        images[name] = np.asarray(
+            parakeet.io.open(str(d / ("%s.h5" % name))).data[0], dtype=np.float64
+        )
+    return images
+
+
+@pytest.mark.parametrize("tilt", [0.0, 30.0])
+def test_the_elastic_out_term_scales_a_uniform_slab_exactly(tmp_path, tilt):
+    # Water filling the whole grid, 120 A thick: the term is one factor on the
+    # whole exit wave, so every pixel of the image falls by exp(-L / lambda),
+    # L = 120 A / cos tilt
+    import parakeet.elastic as elastic
+
+    images = elastic_out_images(
+        tmp_path / "slab", doc(box("water", -FAR, FIELD + FAR)), None, tilt
+    )
+    ratio = images["on"] / images["off"]
+    length = THICKNESS / np.cos(np.radians(tilt))
+    water = elastic.water_number_density(WATER_DENSITY)
+    expect = np.exp(-length * sum(elastic.missing_cross_sections(water, 300, ANGPIX)))
+    print("uniform slab at %g deg: ratio %.8f +- %.1e, expects %.8f" % (tilt, ratio.mean(), ratio.std(), expect))
+    assert ratio.mean() == pytest.approx(expect, rel=1e-6)
+    assert ratio.std() < 1e-6
+
+
+@pytest.mark.parametrize("tilt", [0.0, 30.0])
+def test_the_elastic_out_term_removes_each_materials_share(tmp_path, tilt):
+    # Water for x < 192 A and twice its atoms beyond: each half's mean falls by
+    # its own exp(-L / lambda). Pixel by pixel the ratio is not uniform: the
+    # step in the factor at x = 192 A (and at the grid's periodic wrap) is
+    # delocalised by the defocus like any other edge, so means only
+    import parakeet.elastic as elastic
+
+    water = elastic.water_number_density(WATER_DENSITY)
+    dense = {k: 2 * v for k, v in water.items()}
+    images = elastic_out_images(
+        tmp_path / "slab",
+        doc(
+            box("water", -FAR, 192.0),
+            box("dense", 192.0, FIELD + FAR, material="dense"),
+        ),
+        {"dense": dict(DENSE, number_density_A3=dense)},
+        tilt,
+    )
+    cols = np.arange(NX) * ANGPIX
+    length = THICKNESS / np.cos(np.radians(tilt))
+    for half, n, (x0, x1) in (("water", water, (40, 150)), ("dense", dense, (234, 344))):
+        expect = np.exp(-length * sum(elastic.missing_cross_sections(n, 300, ANGPIX)))
+        sel = (slice(20, -20), (cols > x0) & (cols < x1))
+        got = images["on"][sel].mean() / images["off"][sel].mean()
+        print("%s at %g deg: mean ratio %.7f, expects %.7f" % (half, tilt, got, expect))
+        assert got == pytest.approx(expect, rel=2e-4)
 
 
 def test_a_vacuum_region_needs_the_engine_to_support_it(tmp_path):
