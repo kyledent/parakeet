@@ -1058,12 +1058,14 @@ class ElasticOut(BaseModel):
         ),
     )
 
-    halo: Literal[False] = Field(
+    halo: bool = Field(
         False,
         description=(
-            "False: the scattering the aperture would pass but the grid cannot "
-            "hold is removed as well, as if lost (an upper bound on the loss). "
-            "Returning it displaced is not implemented yet"
+            "The scattering the aperture would pass but the grid cannot hold: "
+            "True puts it back as intensity, displaced over rings of radius "
+            "lambda q |c_10 + C_s lambda^2 q^2| about the pixel it left (one "
+            "defocus per image; electrons whose rings leave the field are lost "
+            "there); False removes it as if lost, an upper bound on the loss"
         ),
     )
 

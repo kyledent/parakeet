@@ -415,7 +415,7 @@ def test_the_zero_loss_filter_follows_each_materials_path(tmp_path):
     assert dense == pytest.approx(expect_dense, rel=0.01)
 
 
-def elastic_out_images(directory, regions, materials, tilt):
+def elastic_out_images(directory, regions, materials, tilt, on=None, lens=None):
     """The same exit wave through the optics without and with elastic_out"""
     scan = (
         None
@@ -425,9 +425,11 @@ def elastic_out_images(directory, regions, materials, tilt):
     _, path = render(directory, regions, materials=materials, scan=scan)
     d = path.parent
     images = {}
-    for name, elastic_out in (("off", None), ("on", {"model": "iam"})):
+    for name, elastic_out in (("off", None), ("on", on or {"model": "iam"})):
         cfg = yaml.safe_load(path.read_text())
         cfg["simulation"]["elastic_out"] = elastic_out
+        if lens is not None:
+            cfg["microscope"]["lens"] = lens
         cfg["output"] = {"dtype": "float32"}  # float16 rounds at ~5e-4
         c = d / ("config_%s.yaml" % name)
         c.write_text(yaml.safe_dump(cfg))
@@ -484,6 +486,30 @@ def test_the_elastic_out_term_removes_each_materials_share(tmp_path, tilt):
         got = images["on"][sel].mean() / images["off"][sel].mean()
         print("%s at %g deg: mean ratio %.7f, expects %.7f" % (half, tilt, got, expect))
         assert got == pytest.approx(expect, rel=2e-4)
+
+
+def test_the_halo_puts_the_band_back_into_a_uniform_slab(tmp_path):
+    # No aperture, no C_s and 2000 A of defocus: every ring is under ~300 A,
+    # so in the middle of a slab filling the field the halo returns nearly
+    # all that the term removed, and the image hardly falls. Without the
+    # halo it falls by exp(-tau)
+    import parakeet.elastic as elastic
+
+    lens = {"c_10": -2000.0, "c_30": 0.0}
+    images = elastic_out_images(
+        tmp_path / "slab",
+        doc(box("water", -FAR, FIELD + FAR)),
+        None,
+        0.0,
+        on={"model": "iam", "halo": True},
+        lens=lens,
+    )
+    water = elastic.water_number_density(WATER_DENSITY)
+    removed = -np.expm1(-THICKNESS * sum(elastic.missing_cross_sections(water, 300, ANGPIX)))
+    centre = images["on"][96:160, 96:160].mean() / images["off"][96:160, 96:160].mean()
+    print("halo: centre ratio %.7f; removed %.5f" % (centre, removed))
+    assert 1 - centre < 0.1 * removed  # over 90% comes back to the centre
+    assert centre <= 1 + 1e-6  # and never more than was removed
 
 
 def test_a_vacuum_region_needs_the_engine_to_support_it(tmp_path):

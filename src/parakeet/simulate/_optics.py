@@ -175,6 +175,7 @@ class OpticsImageSimulator(object):
         tau = np.zeros((detector.ny + 2 * margin, detector.nx + 2 * margin))
         constants = {}
         uncovered = []
+        bands = {}
         for material, length in paths.items():
             n = densities.get(material)
             if n is None:
@@ -183,8 +184,12 @@ class OpticsImageSimulator(object):
             mu_lost, mu_band = parakeet.elastic.missing_cross_sections(
                 n, energy, detector.pixel_size, q_acc, settings["model"]
             )
-            mu = mu_lost + mu_band  # halo off: the band is removed as well
+            # The band is removed from the wave too; with the halo on it comes
+            # back, displaced, as intensity
+            mu = mu_lost + mu_band
             tau += length * mu
+            if mu_band > 0:
+                bands[material] = (length * mu_band, n)
             constants[material] = {
                 "lambda_lost_A": 1 / mu_lost if mu_lost > 0 else None,
                 "lambda_band_A": 1 / mu_band if mu_band > 0 else None,
@@ -220,12 +225,74 @@ class OpticsImageSimulator(object):
                 "independent atoms beyond what the grid draws (S(q) = 1)",
                 "the material's random field taken to draw its own scattering "
                 "within the grid (W^2 dsigma below q_N)",
-                "halo off: scattering inside the aperture but outside the grid "
-                "is removed as if lost",
+                (
+                    "halo on: scattering inside the aperture but outside the "
+                    "grid returns as rings of radius lambda q |c_10 + C_s "
+                    "lambda^2 q^2| about its pixel (geometric optics, one "
+                    "defocus per image), incoherently"
+                    if settings["halo"]
+                    else "halo off: scattering inside the aperture but outside "
+                    "the grid is removed as if lost"
+                ),
                 "single kinematic scattering; losses multiply",
             ],
         }
+        self._elastic_bands = bands
         return tau, record
+
+    def elastic_halo(self, index, intensity, tau, electron_fraction, defocus):
+        """
+        The band's electrons, put back as intensity (parakeet.elastic.halo):
+        what each pixel's band removed from the wave, spread over the rings
+        each material's scattering angles give, after the energy filter's
+        share at the pixel they left
+
+        Args:
+            intensity: |psi|^2 of the exit wave before the term
+            tau: The term's optical depth
+            electron_fraction: The filter's share (a scalar or a map)
+            defocus: The frame's c_10 (A)
+
+        Returns:
+            (halo, record)
+
+        """
+        import parakeet.elastic
+
+        detector = self.microscope.detector
+        energy = self.microscope.beam.energy
+        q_acc = self.microscope.objective_aperture_cutoff_freq
+        q_acc = np.inf if q_acc is None else float(q_acc)
+        c_30_A = self.microscope.lens.c_30 * 1e7
+        removed = intensity * -np.expm1(-tau)
+        share = np.divide(removed, tau, out=np.zeros_like(tau), where=tau > 0)
+        share = share * electron_fraction
+        total = np.zeros_like(tau)
+        record = {"defocus_A": float(defocus), "materials": {}}
+        for material, (band, n) in self._elastic_bands.items():
+            r, w, rings = parakeet.elastic.band_rings(
+                n,
+                energy,
+                detector.pixel_size,
+                q_acc,
+                defocus,
+                c_30_A,
+                self.simulation["elastic_out"]["model"],
+            )
+            h, info = parakeet.elastic.halo(share * band, detector.pixel_size, r, w)
+            total += h * (1 - rings["tail_share"])
+            record["materials"][material] = dict(rings, **info)
+        # One defocus per image: across a tilted field the defocus changes by
+        # the field's half width times tan(tilt), which moves every ring by
+        # that share of its radius at the field's edge
+        angle = float(self.scan.angles[index])
+        half = 0.5 * max(detector.nx, detector.ny) * detector.pixel_size
+        record["tilt_deg"] = angle
+        record["ring_radius_error_at_field_edge"] = (
+            half * abs(np.tan(np.radians(angle))) / abs(defocus) if defocus else None
+        )
+        record["mean_halo"] = float(total.mean())
+        return total, record
 
     def __call__(self, index):
         """
@@ -326,6 +393,7 @@ class OpticsImageSimulator(object):
         # The elastic scattering the grid cannot hold leaves the wave: an
         # amplitude factor from each pixel's path through each material
         self.elastic_out_record = None
+        intensity_before = None
         if self.simulation.get("elastic_out"):
             tau_el, record = self.elastic_out(index, margin)
             if tau_el.shape != psi.shape:
@@ -333,6 +401,8 @@ class OpticsImageSimulator(object):
                     "elastic_out: path maps %s do not match the exit wave %s"
                     % (tau_el.shape, psi.shape)
                 )
+            if self.simulation["elastic_out"]["halo"]:
+                intensity_before = np.abs(psi) ** 2
             psi = psi * np.exp(-0.5 * tau_el).astype(psi.dtype)
             record["frame"] = int(index)
             record["mean_transmission"] = float(np.mean(np.exp(-tau_el)))
@@ -550,6 +620,15 @@ class OpticsImageSimulator(object):
             electron_fraction = np.sum(bin_weight)
 
         logger.debug("Electron fraction = %.2f", float(np.mean(electron_fraction)))
+
+        # The band's electrons land again, displaced, after the filter's share
+        if self.elastic_out_record is not None and intensity_before is not None:
+            halo, halo_record = self.elastic_halo(
+                index, intensity_before, tau_el, electron_fraction, defocus
+            )
+            image = image + halo
+            self.elastic_out_record["halo"] = halo_record
+            logger.info("elastic_out halo: %s" % json.dumps(halo_record))
 
         # Remove margin
         j0 = margin

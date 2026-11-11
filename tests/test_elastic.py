@@ -110,8 +110,58 @@ def test_the_config_checks_a_composition():
         parakeet.config.Material(number_density_A3={"O": -1.0})
     s = parakeet.config.Simulation(elastic_out={"model": "lenz"})
     assert s.elastic_out.model == "lenz" and s.elastic_out.halo is False
+    assert parakeet.config.Simulation(elastic_out={"halo": True}).elastic_out.halo
     with pytest.raises(ValueError):
-        parakeet.config.Simulation(elastic_out={"halo": True})
+        parakeet.config.Simulation(elastic_out={"model": "mott"})
+
+
+# -- the halo -----------------------------------------------------------------
+
+
+def test_the_rings_follow_the_aberration_function():
+    lam = E.wavelength(KV)
+    c10, cs = -30000.0, 2.7e7
+    q_acc = 11.7e-3 / lam
+    r, w, rec = E.band_rings(WATER, KV, DX, q_acc, c10, cs)
+    # Every ring is the displacement of some q in the band
+    q = np.linspace(0.5 * QN, q_acc, 100001)
+    radius = lam * q * np.abs(c10 + cs * lam**2 * q**2)
+    assert r.min() >= radius.min() * (1 - 1e-3) and r.max() <= radius.max() * (1 + 1e-3)
+    # and the weights are the band's cross-section, less the reported tail
+    band = E.missing_cross_sections(WATER, KV, DX, q_acc)[1]
+    assert w.sum() == pytest.approx(band * (1 - rec["tail_share"]), rel=1e-9)
+    assert rec["tail_share"] < 1e-4
+
+
+def test_a_uniform_source_gets_its_band_back_where_the_rings_fit():
+    lam = E.wavelength(KV)
+    r, w, _ = E.band_rings(WATER, KV, DX, 11.7e-3 / lam, -30000.0, 2.7e7)
+    src = np.ones((600, 600))
+    h, info = E.halo(src, DX, r, w)
+    # Rings of 100-310 A, a field of 900 A: the centre receives what it gave
+    assert h[300, 300] == pytest.approx(1.0, abs=1e-3)
+    assert info["beyond_diagonal"] == 0.0
+    # and the field loses only what lands past its edge
+    assert 0 < info["left_field"] < 0.5
+    assert h.sum() == pytest.approx(src.sum() * (1 - info["left_field"]), rel=1e-9)
+
+
+def test_a_point_source_lands_on_its_rings():
+    r = np.array([60.0])
+    w = np.array([1.0])
+    src = np.zeros((301, 301))
+    src[150, 150] = 1.0
+    h, info = E.halo(src, DX, r, w)
+    assert h.sum() == pytest.approx(1.0, rel=1e-9) and info["left_field"] == pytest.approx(0, abs=1e-12)
+    y, x = np.indices(h.shape)
+    rho = np.hypot(y - 150, x - 150) * DX
+    assert np.sum(h * rho) / h.sum() == pytest.approx(60.0, rel=0.05)
+
+
+def test_rings_wider_than_the_field_leave_it():
+    src = np.ones((64, 64))
+    h, info = E.halo(src, DX, np.array([1e6]), np.array([1.0]))
+    assert not h.any() and info["left_field"] == 1.0
 
 
 # -- the optics' use of it, with no engine ------------------------------------

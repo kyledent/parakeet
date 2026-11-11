@@ -59,6 +59,8 @@ __all__ = [
     "missing_cross_sections",
     "water_number_density",
     "tail_fraction",
+    "band_rings",
+    "halo",
     "MODELS",
 ]
 
@@ -72,6 +74,14 @@ WATER_MOLAR_MASS = 18.01528  # g/mol
 
 # The upper limit of validity of the Table 4.3.2.2 fit, s = sin(theta)/lambda
 PENG_S_MAX = 2.0  # 1/A
+
+# With no aperture the halo's rings are sampled to this q; the weight beyond is
+# far below band_rings' default tail cut
+HALO_Q_MAX = 16.0  # 1/A
+
+# The halo's coarse canvas, padded for the widest ring that can land, is at
+# most this many coarse pixels across
+MAX_HALO_CANVAS = 4096
 
 ATOMIC_NUMBER = {
     "H": 1,
@@ -281,3 +291,159 @@ def water_number_density(density):
     """H2O at a mass density (g/cm^3): element -> atoms per A^3"""
     n = density * AVOGADRO / WATER_MOLAR_MASS * 1e-24
     return {"H": 2 * n, "O": n}
+
+
+def band_rings(
+    number_density,
+    energy_kev,
+    pixel_size,
+    q_acc,
+    c_10,
+    c_30_A,
+    model="iam",
+    n=4000,
+    keep=1 - 1e-5,
+):
+    """
+    Where the band's electrons land: the scattering the aperture passes but
+    the grid cannot hold, as rings about the pixel it left. An electron
+    scattered to q is displaced, in geometric optics, by the gradient of the
+    aberration function, r(q) = lambda q |c_10 + C_s lambda^2 q^2| (Parakeet's
+    chi = -(pi lambda c_10 q^2 + pi/2 lambda^3 C_s q^4)); its weight is the
+    material's (1 - W(q)^2) dsigma/dq.
+
+    Args:
+        number_density: Element -> atoms per A^3
+        energy_kev: The beam energy (keV)
+        pixel_size: The grid spacing (A)
+        q_acc: The aperture's acceptance (1/A); inf with none
+        c_10: The frame's defocus (A, Parakeet's sign)
+        c_30_A: The spherical aberration (A)
+        model: "iam" or "lenz"
+        n: The number of q samples
+        keep: The share of the band's weight to resolve; the rest, the far
+            tail, is reported and treated as lost
+
+    Returns:
+        (r, w, record): ring radii (A) and weights (1/A, summing to mu_band
+        less the tail), and the q range and tail share
+
+    """
+    lam = wavelength(energy_kev)
+    g = gamma(energy_kev)
+    qn = grid_q(pixel_size)
+    q_lo = 0.5 * qn  # W = 1 below: nothing missing there
+    q_hi = q_acc if np.isfinite(q_acc) else HALO_Q_MAX
+    if q_hi <= q_lo:
+        return np.zeros(0), np.zeros(0), {"q": [q_lo, q_hi], "tail_share": 0.0}
+    q = np.geomspace(q_lo, q_hi, n + 1)
+    dq = np.diff(q)
+    qc = 0.5 * (q[1:] + q[:-1])
+    dens = np.zeros_like(qc)
+    for element, nd in number_density.items():
+        dens += nd * _dsigma_dq(element, lam, g, qc, model)
+    w = dens * (1 - window(qc, pixel_size) ** 2) * dq
+    _, total = missing_cross_sections(number_density, energy_kev, pixel_size, q_acc, model)
+    if total <= 0 or w.sum() <= 0:
+        return np.zeros(0), np.zeros(0), {"q": [q_lo, q_hi], "tail_share": 0.0}
+    # Rescale the quadrature to the closed form, then cut the far tail
+    w *= total / w.sum()
+    c = np.cumsum(w) / total
+    m = int(np.searchsorted(c, keep)) + 1
+    r = lam * qc[:m] * np.abs(c_10 + c_30_A * lam**2 * qc[:m] ** 2)
+    record = {
+        "q": [float(q_lo), float(qc[m - 1])],
+        "r_A": [float(r.min()), float(r.max())],
+        "tail_share": float(1 - w[:m].sum() / total),
+    }
+    return r, w[:m], record
+
+
+def halo(source, pixel_size, r, w):
+    """
+    The band's electrons put back: each pixel's removed intensity spread over
+    its rings (`band_rings`), summed incoherently. The convolution is linear
+    on a zero-padded canvas, so electrons whose rings leave the field are
+    lost there (the specimen stops at its edge). It is computed on a coarse
+    grid, a quarter of the smallest ring radius, and interpolated back.
+
+    Args:
+        source: The intensity each pixel's band removes, (ny, nx), before the
+            ring weights (the share of each pixel's band, summed to 1)
+        pixel_size: The grid spacing (A)
+        r, w: The ring radii (A) and their weights, normalised here
+
+    Returns:
+        (halo, record): the (ny, nx) intensity that lands, and the coarse
+        pixel and the share of the source that leaves the field
+
+    """
+    from scipy.ndimage import map_coordinates
+
+    ny, nx = source.shape
+    total = float(source.sum())
+    if len(r) == 0 or total == 0:
+        return np.zeros_like(source), {"coarse_binning": None, "left_field": 0.0}
+    r = np.asarray(r, dtype="float64")
+    w = np.asarray(w, dtype="float64") / np.sum(w)
+
+    # A ring wider than the field's diagonal lands outside it from anywhere
+    diagonal = np.hypot(ny, nx) * pixel_size
+    beyond = float(w[r > diagonal].sum())
+    keep = r <= diagonal
+    r, w = r[keep], w[keep]
+    if len(r) == 0:
+        return np.zeros_like(source), {"coarse_binning": None, "left_field": 1.0}
+
+    # The coarse pixel: a quarter of the ring radius below which a tenth of
+    # the weight lies (smaller rings fall in their own coarse pixel), and no
+    # finer than keeps the padded canvas within MAX_HALO_CANVAS
+    order = np.argsort(r)
+    r10 = r[order][np.searchsorted(np.cumsum(w[order]), 0.1 * w.sum())]
+    a = max(pixel_size, 0.25 * r10, (max(ny, nx) * pixel_size + 2 * r.max()) / MAX_HALO_CANVAS)
+    b = max(1, int(np.floor(a / pixel_size)))
+    a = b * pixel_size  # the coarse pixel (A)
+    cy, cx = -(-ny // b), -(-nx // b)
+    s = np.zeros((cy * b, cx * b))
+    s[:ny, :nx] = source
+    coarse = s.reshape(cy, b, cx, b).sum(axis=(1, 3))
+
+    # The kernel: each ring's weight spread over its circumference
+    pad = int(np.ceil(r.max() / a)) + 1
+    ky, kx = cy + 2 * pad, cx + 2 * pad
+    fy, fx = 2 * ky, 2 * kx  # linear convolution
+    yy = np.fft.fftfreq(fy, 1.0 / fy)[:, None] * a
+    xx = np.fft.fftfreq(fx, 1.0 / fx)[None, :] * a
+    rho = np.sqrt(yy**2 + xx**2)
+    step = 0.25 * a
+    edges = np.arange(0.0, r.max() + 2 * step, step)
+    profile, _ = np.histogram(r, bins=edges, weights=w)
+    centres = 0.5 * (edges[1:] + edges[:-1])
+    density = profile / (2 * np.pi * np.maximum(centres, 1e-12) * step)  # per A^2
+    kernel = np.interp(rho, centres, density, right=0.0) * a**2
+    inner = w[r < 0.5 * a].sum()  # rings inside the centre pixel
+    kernel[0, 0] = inner
+    if kernel.sum() > 0:
+        kernel *= 1.0 / kernel.sum()
+
+    canvas = np.zeros((fy, fx))
+    canvas[pad : pad + cy, pad : pad + cx] = coarse
+    out = np.fft.irfft2(np.fft.rfft2(canvas) * np.fft.rfft2(kernel), s=(fy, fx))
+    field = out[pad : pad + cy, pad : pad + cx]
+    landed = float(field.sum())
+
+    # Back onto the fine grid: the coarse density at each fine pixel's centre
+    dens = field / b**2
+    jy = (np.arange(ny) + 0.5) / b - 0.5
+    jx = (np.arange(nx) + 0.5) / b - 0.5
+    gy, gx = np.meshgrid(jy, jx, indexing="ij")
+    fine = map_coordinates(dens, [gy, gx], order=1, mode="nearest")
+    landed *= 1 - beyond
+    if fine.sum() > 0:
+        fine *= landed / fine.sum()
+    return fine, {
+        "coarse_binning": b,
+        "coarse_pixel_A": a,
+        "beyond_diagonal": beyond,
+        "left_field": 1 - landed / total,
+    }
