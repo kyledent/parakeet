@@ -199,6 +199,18 @@ def filter_transmission_tau(
     return float(total) if total.ndim == 0 else total
 
 
+_EXACT_CHUNK = None
+
+# Whether exact tracing asks only the regions a chunk's lines can meet (the
+# maps are the same either way; tests switch it off to show that)
+CULL_REGIONS = True
+
+
+def _exact_chunk(start):
+    """path_length_maps' exact tracing of one chunk, in a forked worker"""
+    return _EXACT_CHUNK(start)
+
+
 def path_length_maps(
     regions,
     shape,
@@ -213,6 +225,7 @@ def path_length_maps(
     stride=8,
     step=2.0,
     exact=False,
+    workers=1,
 ):
     """
     The path length (A) along the beam through each material, for every pixel
@@ -248,7 +261,12 @@ def path_length_maps(
             takes the material that owns its midpoint, so a path is exact to
             rounding. Every pixel under a curved region's projection is traced
             too, since interpolation between corner rays that agree would not
-            follow the surface's curvature inside a cell
+            follow the surface's curvature inside a cell. Each chunk of rays
+            asks which region owns a point only of the regions whose bounds
+            the chunk's lines meet (and their ancestors): the others contain
+            none of its points, so the result is the same, bit for bit
+        workers: Chunks of exact rays traced at once (forked processes); the
+            result does not depend on it
 
     Returns:
         dict: material name -> (ny + 2 margin, nx + 2 margin) array of A
@@ -290,8 +308,38 @@ def path_length_maps(
 
     beam = rot.inv().apply([0.0, 0.0, 1.0])  # the beam's direction in the sample
 
-    def material_index(points):
-        owner = R.owner(regs, points) if regs else np.full(len(points), -1)
+    # Each region's bounds, widened by 1 A so a line that grazes them is kept
+    region_lo = np.array([R.bounds(r)[0] for r in regs]).reshape(-1, 3) - 1.0
+    region_hi = np.array([R.bounds(r)[1] for r in regs]).reshape(-1, 3) + 1.0
+    by_id = {r.id: r for r in regs}
+
+    def regions_met(p0):
+        """The regions whose bounds any line p0 + t beam meets (any t), and
+        their ancestors, in document order"""
+        if not regs or not CULL_REGIONS:
+            return regs
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t1 = (region_lo[:, None, :] - p0[None, :, :]) / beam
+            t2 = (region_hi[:, None, :] - p0[None, :, :]) / beam
+        # an axis the beam does not move along: inside the slab or never
+        flat = beam == 0
+        within = (p0[None, :, :] >= region_lo[:, None, :]) & (
+            p0[None, :, :] <= region_hi[:, None, :]
+        )
+        lo = np.where(flat, np.where(within, -np.inf, np.inf), np.minimum(t1, t2))
+        hi = np.where(flat, np.where(within, np.inf, -np.inf), np.maximum(t1, t2))
+        hit = (lo.max(axis=2) <= hi.min(axis=2)).any(axis=1)
+        keep = {r.id for r, h in zip(regs, hit) if h}
+        for r in regs:
+            if r.id in keep:
+                keep.update(r.ancestors)
+        return [r for r in regs if r.id in keep]
+
+    def material_index(points, candidates=None):
+        candidates = regs if candidates is None else candidates
+        owner = (
+            R.owner(candidates, points) if candidates else np.full(len(points), -1)
+        )
         index = np.full(len(points), -1)
         for i, r in enumerate(regs):
             if r.material != VACUUM_NAME:
@@ -317,7 +365,7 @@ def path_length_maps(
         mid = 0.5 * (t[:, 1:] + t[:, :-1])
         length = np.diff(t, axis=1)
         pts = p0[:, None, :] + mid[..., None] * beam
-        index = material_index(pts.reshape(-1, 3)).reshape(mid.shape)
+        index = material_index(pts.reshape(-1, 3), regions_met(p0)).reshape(mid.shape)
         out = np.zeros((len(p0), len(materials)))
         for m in range(len(materials)):
             out[:, m] = np.where(index == m, length, 0.0).sum(axis=1)
@@ -327,11 +375,41 @@ def path_length_maps(
         """Path lengths (len(px), materials) for rays through pixels (k_x, k_y)"""
         if exact:
             out = np.zeros((len(px_x), len(materials)))
-            for start in range(0, len(px_x), 2048):
+            starts = range(0, len(px_x), 2048)
+
+            def one(start):
                 out[start : start + 2048] = trace_exact(
                     np.asarray(px_x)[start : start + 2048],
                     np.asarray(px_y)[start : start + 2048],
                 )
+
+            if workers > 1 and len(starts) > 1:
+                # Forked processes, not threads. Chunks traced in threads
+                # gave wrong maps in testing, although owner(),
+                # boundary_crossings() and Rotation.apply each gave the same
+                # results threaded as serial; the cause was not isolated, so
+                # nothing here is to be called from threads. Each child
+                # inherits this frame's state and returns its chunk; the
+                # parent places them in order
+                import multiprocessing
+
+                global _EXACT_CHUNK
+                _EXACT_CHUNK = lambda start: trace_exact(  # noqa: E731
+                    np.asarray(px_x)[start : start + 2048],
+                    np.asarray(px_y)[start : start + 2048],
+                )
+                try:
+                    ctx = multiprocessing.get_context("fork")
+                    with ctx.Pool(processes=workers) as pool:
+                        for start, chunk in zip(
+                            starts, pool.map(_exact_chunk, starts, chunksize=1)
+                        ):
+                            out[start : start + 2048] = chunk
+                finally:
+                    _EXACT_CHUNK = None
+            else:
+                for start in starts:
+                    one(start)
             return out
         out = np.zeros((len(px_x), len(materials)))
         for start in range(0, len(px_x), 4096):

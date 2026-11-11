@@ -5,6 +5,8 @@
 # t/lambda is traced through the regions' materials, and the filter passes the
 # fraction that depth gives. CPU only.
 #
+import math
+
 import numpy as np
 import pytest
 
@@ -384,3 +386,47 @@ def test_an_exact_coarse_map_equals_the_exact_full_one():
     coarse = paths(document, stride=8)
     for m in full:
         assert np.abs(full[m] - coarse[m]).max() < 1e-9
+
+
+def crowded(tilt_deg=0.0):
+    """A slab with nested spheres and an ellipsoid inside the field, and regions
+    whose bounds no ray of it meets (far along x and y, beyond the field)"""
+    inside = [
+        dict(id="s%d" % i, kind="sphere", material=("dense", "water")[i % 2],
+             parent="w", centre_A=[80.0 + 60 * i, 120.0 + 25 * i, 100.0], radius_A=30.0)
+        for i in range(5)
+    ]
+    far = [
+        dict(id="f%d" % i, kind="sphere", material="dense", centre_A=[5000.0 + 900 * i, -4000.0, 100.0],
+             radius_A=200.0)
+        for i in range(4)
+    ]
+    ell = dict(id="e", kind="ellipsoid", material="dense", parent="w", centre_A=[300.0, 300.0, 100.0],
+               semi_axes_A=[60.0, 30.0, 20.0], axes=[[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+    return doc(slab("w", -5000, 5000, "water"), *inside, ell, *far), (0.0, math.radians(tilt_deg), 0.0)
+
+
+@pytest.mark.parametrize("tilt", [0.0, 50.0])
+def test_the_per_chunk_region_cull_does_not_change_the_exact_maps(tilt, monkeypatch):
+    # The same scene traced twice: as is (each chunk asks only the regions whose
+    # bounds its lines meet; the far ones here are met by none) and with the
+    # cull off, every region asked. Bit for bit the same
+    document, orientation = crowded(tilt)
+    culled = paths(document, orientation=orientation)
+    monkeypatch.setattr(I, "CULL_REGIONS", False)
+    kept = paths(document, orientation=orientation)
+    assert culled.keys() == kept.keys()
+    for m in culled:
+        assert np.array_equal(culled[m], kept[m])
+
+
+@pytest.mark.parametrize("workers", [2, 3])
+def test_worker_processes_give_the_same_exact_maps(workers):
+    document, orientation = crowded(50.0)
+    kw = dict(stride=1, step=0.5, exact=True)
+    args = (R.parse(document), SHAPE, CENTRE, orientation, (0, 0, 0), (0, 0), 200, 200, 0, 2.0)
+    one = I.path_length_maps(*args, **kw)
+    many = I.path_length_maps(*args, workers=workers, **kw)
+    assert one.keys() == many.keys()
+    for m in one:
+        assert np.array_equal(one[m], many[m])

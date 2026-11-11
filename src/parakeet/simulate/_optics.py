@@ -150,6 +150,7 @@ class OpticsImageSimulator(object):
             # The elastic-out term needs edges exact: trace every crossing
             # analytically. Without it the paths keep their sampled form
             exact=bool(self.simulation.get("elastic_out")),
+            workers=int(self.simulation.get("inelastic_map_workers") or 1),
         )
         self._path_maps = ((index, margin), maps)
         return maps

@@ -1131,6 +1131,15 @@ class Simulation(BaseModel):
         ),
     )
 
+    inelastic_map_workers: int = Field(
+        1,
+        ge=1,
+        description=(
+            "For a sample with regions: the processes tracing the exact "
+            "per-pixel paths (elastic_out); the maps do not depend on it"
+        ),
+    )
+
     partial_volume_samples: int = Field(
         0,
         ge=0,
