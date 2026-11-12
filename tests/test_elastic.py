@@ -222,7 +222,8 @@ def test_the_canvas_grid_is_the_default_of_the_function_and_unchanged():
 
 
 def test_the_halo_grid_setting():
-    assert parakeet.config.Simulation().elastic_out.halo_grid == "field"
+    # elastic_out is off unless given; given, its halo grid is the field's
+    assert parakeet.config.Simulation(elastic_out={"halo": True}).elastic_out.halo_grid == "field"
     s = parakeet.config.Simulation(elastic_out={"halo": True, "halo_grid": "canvas"})
     assert s.elastic_out.halo_grid == "canvas"
     with pytest.raises(Exception):

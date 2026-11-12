@@ -477,6 +477,14 @@ def halo(source, pixel_size, r, w, anchor=None, field=None):
             "left_field": 1 - landed / total,
         }
     fine *= 1 - beyond
+    # What landed on the canvas itself: each coarse pixel's share of what
+    # landed on it, by the canvas pixels it holds (the zeros before and after
+    # the canvas are not canvas), so the conservation ratio below measures the
+    # interpolation alone
+    cover = np.zeros((cy * b, cx * b))
+    cover[oy : oy + ny, ox : ox + nx] = 1.0
+    cover = cover.reshape(cy, b, cx, b).sum(axis=(1, 3)) / b**2
+    on_canvas = float((field_c * cover).sum()) * (1 - beyond)
     # How far beyond the field's edge a source pixel can still feed it: the
     # bilinear stencil of a field pixel reaches a coarse centre half a coarse
     # pixel outside the field, the kernel reaches its farthest non-zero
@@ -492,10 +500,10 @@ def halo(source, pixel_size, r, w, anchor=None, field=None):
         "coarse_pixel_A": a,
         "coarse_offset_px": [oy, ox],
         "beyond_diagonal": beyond,
-        "left_canvas": 1 - landed / total,
-        "left_field": 1 - landed / total,  # the old name for left_canvas
+        "left_canvas": 1 - on_canvas / total,
+        "left_field": 1 - on_canvas / total,  # the old name for left_canvas
         "left_detector_field": 1 - in_field / total,
-        "interpolation_conservation": float(fine.sum() / landed) if landed > 0 else None,
+        "interpolation_conservation": float(fine.sum() / on_canvas) if on_canvas > 0 else None,
         "kernel_support_A": support,
         "reach_A": reach,
         "reach_px": reach / pixel_size,
