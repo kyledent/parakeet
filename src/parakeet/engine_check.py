@@ -75,6 +75,12 @@ FEATURES = {
     # Regions of any kind as a quadric and half-spaces (Masker.set_convex): ellipsoids
     # with axes and cuts, shells, slabs and rotated boxes
     "convex_regions": lambda multem: hasattr(multem.Masker, "set_convex"),
+    # Region keys, a slice-lattice origin and the keyed random field: each region's
+    # field a function of (seed, region key, slice index) alone, so regions can be
+    # culled, reordered or added without changing the others'
+    "keyed_grf": lambda multem: bool(
+        getattr(getattr(multem, "MultiRegionMasker", None), "supports_keyed_grf", False)
+    ),
     "multi_region_potential": lambda multem: (
         hasattr(multem, "ice_slice_statistics")
         and "MultiRegionMasker" in (multem.compute_projected_potential.__doc__ or "")

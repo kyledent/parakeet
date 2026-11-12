@@ -1131,6 +1131,19 @@ class Simulation(BaseModel):
         ),
     )
 
+    grf_draw: Literal["keyed", "shared"] = Field(
+        "keyed",
+        description=(
+            "For a sample with regions, how the GRF texture is drawn. 'keyed': each "
+            "region's field is a function of the seed, the region's id and the "
+            "slice's index on a lattice anchored at the sample centre, so regions "
+            "the image cannot see are dropped without changing the others (needs "
+            "an engine with the keyed field and a seed; otherwise 'shared' is "
+            "used and the render says so). 'shared': the engine's one sequential "
+            "field, as renders before the keyed field (reproduces them)"
+        ),
+    )
+
     inelastic_map_workers: int = Field(
         1,
         ge=1,

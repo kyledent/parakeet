@@ -9,6 +9,7 @@
 # which is included in the root directory of this package.
 #
 
+import hashlib
 import logging
 import numpy as np
 import warnings
@@ -190,6 +191,50 @@ def set_sample_shape(masker, shape, centre):
             list(offset_x),
             list(offset_z),
         )
+
+
+MEDIUM_KEY_ID = "<medium>"
+
+
+def region_key(region_id):
+    """
+    A region's key for the engine's keyed random field: 64 bits of the
+    SHA-256 of its document id, so it follows the region, not its position
+
+    """
+    return int.from_bytes(
+        hashlib.sha256(str(region_id).encode("utf-8")).digest()[:8], "little"
+    )
+
+
+def regions_in_columns(regions, centre, rotation, place, extent, slack=1.0):
+    """
+    The regions whose bounds, turned about the sample centre and placed as the
+    masker places them, meet the simulation grid's columns (x in [0, extent[0]],
+    y in [0, extent[1]], any z), in document order. A region that misses them
+    contributes nothing to any pixel of the image
+
+    """
+    from scipy.spatial.transform import Rotation
+
+    rot = Rotation.from_rotvec(rotation)
+    c = np.asarray(centre, dtype=float)
+    shift = np.asarray(place(np.zeros(3)), dtype=float)
+    kept = []
+    for r in regions:
+        lo, hi = parakeet.sample._regions.bounds(r)
+        corners = np.array(
+            [[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]
+        )
+        p = rot.apply(corners - c) + c + shift
+        if (
+            p[:, 0].max() >= -slack
+            and p[:, 0].min() <= extent[0] + slack
+            and p[:, 1].max() >= -slack
+            and p[:, 1].min() <= extent[1] + slack
+        ):
+            kept.append(r)
+    return kept
 
 
 def set_region_shape(masker, region, place, clip_planes=None):
@@ -918,20 +963,48 @@ class SimulationEngine(object):
         def place(point):
             return ice_centre(point, offset, origin, shift)
 
+        # The keyed GRF: each region's field a function of (seed, region key,
+        # slice index on a lattice anchored at the sample centre), so regions no
+        # column of this image can see are dropped without changing the others'
+        keyed = (
+            simulation.get("grf_draw", "keyed") == "keyed"
+            and engine_features(multem)["keyed_grf"]
+            and simulation.get("seed") is not None
+        )
+        rotation = (0, 0, 0) if scan.is_uniform_angular_scan else orientation
+        n_document = len(regions)
+        if keyed:
+            regions = regions_in_columns(
+                regions,
+                sample.centre,
+                rotation,
+                place,
+                (self.input.spec_lx, self.input.spec_ly),
+            )
+
         # Slots: the medium (if any) first, then the regions in document order.
         # A region's subtractions name slots, so all slots are fixed first.
         first = 0 if medium == vacuum else 1
         slot = {r.id: first + i for i, r in enumerate(regions)}
         plan = parakeet.sample._regions.paint_plan(regions)
 
+        def add(region_masker, parameters, subtract, region_id):
+            if keyed:
+                masker.add_region(
+                    region_masker, parameters, subtract, region_key(region_id)
+                )
+            else:
+                masker.add_region(region_masker, parameters, subtract)
+
         masker = multem.MultiRegionMasker(self.input.nx, self.input.ny, pixel_size)
         if medium != vacuum:
             shape_masker = multem.Masker(self.input.nx, self.input.ny, pixel_size)
             set_sample_shape(shape_masker, sample.shape, place(sample.centre))
-            masker.add_region(
+            add(
                 shape_masker,
                 grf_parameters(materials[medium]),
                 [slot[r.id] for r in regions],
+                MEDIUM_KEY_ID,
             )
         for r in regions:
             region_masker = multem.Masker(self.input.nx, self.input.ny, pixel_size)
@@ -939,23 +1012,38 @@ class SimulationEngine(object):
             material = (
                 VACUUM_PARAMETERS if r.material == vacuum else materials[r.material]
             )
-            masker.add_region(
+            add(
                 region_masker,
                 grf_parameters(material),
-                [slot[other] for other in plan[r.id]],
+                [slot[other] for other in plan[r.id] if other in slot],
+                r.id,
             )
 
         # Rotate about the sample centre, as the atoms are
         centre = place(sample.centre)
-        if scan.is_uniform_angular_scan:
-            masker.set_rotation(centre, (0, 0, 0))
-        else:
-            masker.set_rotation(centre, orientation)
+        masker.set_rotation(centre, rotation)
 
         seed_masker(masker, index, scan, simulation)
         set_partial_volume(masker, simulation)
+        if keyed:
+            # the lattice through the sample centre (the defocus reference too)
+            masker.set_slice_origin(float(centre[2]), float(self.input.spec_dz))
+            masker.set_keyed_grf(True)
+        elif simulation.get("grf_draw", "keyed") == "keyed":
+            logger.warning(
+                "grf_draw 'keyed' needs an engine with the keyed field and a "
+                "seed: drawing the shared field instead"
+            )
         logger.info(
-            "Regions: %d, medium %s, %d masker regions"
-            % (len(regions), medium, masker.num_regions())
+            "Regions: %d, medium %s, %d masker regions; GRF draw %s"
+            % (
+                len(regions),
+                medium,
+                masker.num_regions(),
+                "keyed (slice origin %.3f A, %d of %d regions in the columns)"
+                % (float(centre[2]), len(regions), n_document)
+                if keyed
+                else "shared",
+            )
         )
         return masker

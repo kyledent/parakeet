@@ -30,6 +30,7 @@ def fake_engine(
     potential=True,
     partial=True,
     convex=True,
+    keyed=True,
 ):
     class Masker:
         pass
@@ -64,6 +65,8 @@ def fake_engine(
 
         if vacuum:
             MultiRegionMasker.supports_vacuum_regions = True
+        if keyed:
+            MultiRegionMasker.supports_keyed_grf = True
         if partial:
             MultiRegionMasker.set_partial_volume = lambda self, n: None
         module.MultiRegionMasker = MultiRegionMasker
@@ -102,6 +105,7 @@ def test_an_old_engine_is_refused_by_name():
         potential=False,
         partial=False,
         convex=False,
+        keyed=False,
     )
     assert not any(engine_features(old).values())
     with pytest.raises(EngineFeatureError) as error:
