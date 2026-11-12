@@ -6,10 +6,14 @@
 # This code is distributed under the GPLv3 license, a copy of
 # which is included in the root directory of this package.
 #
+import contextlib
+import logging
 import numpy as np
 import parakeet.landau
 import scipy.signal
 from math import sqrt, pi, cos, exp, log, ceil, floor, factorial, erf
+
+logger = logging.getLogger(__name__)
 
 
 # Inelastic mean free path for amorphous ice at 300 keV. Note this does not
@@ -211,6 +215,28 @@ def _exact_chunk(start):
     return _EXACT_CHUNK(start)
 
 
+def single_threaded_libraries():
+    """
+    A context in which the numerical libraries (BLAS, OpenMP) use one thread
+    each. Forked workers inherit it, so N workers use N cores rather than N
+    times each library's own pool: with the pools left alone, 32 workers took
+    about three times the cores they were given on a shared machine, and ran
+    about 80 times slower. Needs threadpoolctl; without it the pools are left
+    as they are, with a warning
+
+    """
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:
+        logger.warning(
+            "threadpoolctl is not installed: forked path-map workers keep the "
+            "numerical libraries' own thread pools (set OMP_NUM_THREADS=1 and "
+            "OPENBLAS_NUM_THREADS=1 before starting Python instead)"
+        )
+        return contextlib.nullcontext()
+    return threadpool_limits(limits=1)
+
+
 def path_length_maps(
     regions,
     shape,
@@ -400,7 +426,10 @@ def path_length_maps(
                 )
                 try:
                     ctx = multiprocessing.get_context("fork")
-                    with ctx.Pool(processes=workers) as pool:
+                    # one thread per library in each worker (inherited at fork)
+                    with single_threaded_libraries(), ctx.Pool(
+                        processes=workers
+                    ) as pool:
                         for start, chunk in zip(
                             starts, pool.map(_exact_chunk, starts, chunksize=1)
                         ):

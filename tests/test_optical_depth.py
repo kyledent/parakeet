@@ -6,6 +6,7 @@
 # fraction that depth gives. CPU only.
 #
 import math
+import os
 
 import numpy as np
 import pytest
@@ -418,6 +419,40 @@ def test_the_per_chunk_region_cull_does_not_change_the_exact_maps(tilt, monkeypa
     assert culled.keys() == kept.keys()
     for m in culled:
         assert np.array_equal(culled[m], kept[m])
+
+
+_TRACE_CHUNK = I._exact_chunk
+
+
+def _chunk_with_one_thread_per_library(start):
+    # runs in the forked worker: a matrix product large enough for BLAS to
+    # use its pool, then refuse to trace if the process has more than its one
+    # thread (asking threadpoolctl itself from a forked worker aborts it)
+    a = np.ones((600, 600))
+    a @ a
+    threads = len(os.listdir("/proc/self/task"))
+    if threads != 1:
+        raise RuntimeError("the worker runs %d threads" % threads)
+    return _TRACE_CHUNK(start)
+
+
+def test_each_worker_process_runs_its_libraries_single_threaded(monkeypatch):
+    # 32 workers, each with its own BLAS/OpenMP pool, took about three times
+    # the cores they were given and ran about 80 times slower: the workers
+    # must see one thread per library, whatever the parent's pools are
+    threadpoolctl = pytest.importorskip("threadpoolctl")
+    if not os.path.isdir("/proc/self/task"):
+        pytest.skip("needs /proc to count a worker's threads")
+    monkeypatch.setattr(I, "_exact_chunk", _chunk_with_one_thread_per_library)
+    document, orientation = crowded(50.0)
+    args = (R.parse(document), SHAPE, CENTRE, orientation, (0, 0, 0), (0, 0), 200, 200, 0, 2.0)
+    # the parent's pools at 4 threads, as an unconfigured machine would have them
+    with threadpoolctl.threadpool_limits(limits=4):
+        parent = [p["num_threads"] for p in threadpoolctl.threadpool_info()]
+        if not parent or max(parent) < 2:
+            pytest.skip("no numerical library here runs more than one thread")
+        maps = I.path_length_maps(*args, stride=1, step=0.5, exact=True, workers=2)
+    assert maps
 
 
 @pytest.mark.parametrize("workers", [2, 3])

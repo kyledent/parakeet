@@ -81,6 +81,7 @@ def main():
             "pyyaml",
             "scipy",
             "starfile",
+            "threadpoolctl",
             "lxml_html_clean",
         ],
         tests_require=tests_require,
