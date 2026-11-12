@@ -986,7 +986,19 @@ class SimulationEngine(object):
         # A region's subtractions name slots, so all slots are fixed first.
         first = 0 if medium == vacuum else 1
         slot = {r.id: first + i for i, r in enumerate(regions)}
-        plan = parakeet.sample._regions.paint_plan(regions)
+        # How each region's partial-volume fraction takes off the regions it
+        # subtracts: 'interval' (exact; the default where the engine has it) or
+        # 'legacy' (as renders before it, with every outranking region listed)
+        composition = simulation.get("region_composition", "interval")
+        interval = composition == "interval" and engine_features(multem)[
+            "interval_composition"
+        ]
+        if composition == "interval" and not interval:
+            logger.warning(
+                "region_composition 'interval' needs an engine with it: composing "
+                "partial-volume fractions the legacy way instead"
+            )
+        plan = parakeet.sample._regions.paint_plan(regions, prune=interval)
 
         def add(region_masker, parameters, subtract, region_id):
             if keyed:
@@ -997,6 +1009,8 @@ class SimulationEngine(object):
                 masker.add_region(region_masker, parameters, subtract)
 
         masker = multem.MultiRegionMasker(self.input.nx, self.input.ny, pixel_size)
+        if engine_features(multem)["interval_composition"]:
+            masker.set_region_composition("interval" if interval else "legacy")
         if medium != vacuum:
             shape_masker = multem.Masker(self.input.nx, self.input.ny, pixel_size)
             set_sample_shape(shape_masker, sample.shape, place(sample.centre))

@@ -1211,20 +1211,32 @@ def check_nesting(regions, mode="refuse"):
     return clipped
 
 
-def paint_plan(regions):
+def paint_plan(regions, prune=True):
     """
     For each region, the regions whose shapes it must subtract
 
     A region's shape less every region that outranks it is exactly the set of
     points it owns, provided every child lies inside its parent
-    (`check_nesting`).
+    (`check_nesting`). For the same reason a region need not subtract an
+    outranking region whose ancestor also outranks it: the child lies inside
+    that ancestor, so the union subtracted is the same. With prune (the
+    default) such regions are left out, so a region subtracts each part of
+    space once; prune=False lists every outranking region, as the engine's
+    legacy composition of fractions was drawn with.
 
     Returns:
-        dict: region id -> list of the ids of the regions that outrank it,
-        in document order
+        dict: region id -> list of the ids of the regions it subtracts, in
+        document order
 
     """
-    return {r.id: [o.id for o in regions if o.rank > r.rank] for r in regions}
+    plan = {}
+    for r in regions:
+        above = [o for o in regions if o.rank > r.rank]
+        if prune:
+            ids = {o.id for o in above}
+            above = [o for o in above if not ids.intersection(o.ancestors)]
+        plan[r.id] = [o.id for o in above]
+    return plan
 
 
 def _jsonable(value):

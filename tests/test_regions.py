@@ -288,6 +288,37 @@ def test_the_paint_plan_draws_exactly_the_owner_at_every_point():
     assert set(owner) == set(range(-1, len(regions)))
 
 
+def test_the_pruned_paint_plan_subtracts_each_part_once_and_draws_the_same():
+    # A cytoplasm under an organelle with a bilayer child, and an outer region
+    # under all three: pruned, nothing subtracts a child whose parent it also
+    # subtracts, and every point is drawn exactly as unpruned
+    _, regions = R.parse(
+        doc(
+            box("slab", [0, 0, 0], [100, 100, 40], priority=-1),
+            sphere("cell", [-30, 0, 0], 35, parent="slab"),
+            sphere("organelle", [-30, 0, 0], 15, parent="cell"),
+            sphere("bilayer", [-30, 0, 0], 14, parent="organelle"),
+            sphere("ice", [-30, 0, 30], 20, priority=-2),
+        )
+    )
+    R.check_nesting(regions)
+    full, pruned = R.paint_plan(regions, prune=False), R.paint_plan(regions)
+    assert full["cell"] == ["organelle", "bilayer"] and pruned["cell"] == ["organelle"]
+    assert pruned["ice"] == ["slab"]
+    by_id = {r.id: r for r in regions}
+    for r, subs in pruned.items():
+        assert not any(set(by_id[s].ancestors) & set(subs) for s in subs)
+    points = np.random.default_rng(2).uniform(-110, 110, size=(100000, 3))
+    shapes = {r.id: R.contains(r, points) for r in regions}
+    for r in regions:
+        a, b = shapes[r.id].copy(), shapes[r.id].copy()
+        for o in full[r.id]:
+            a &= ~shapes[o]
+        for o in pruned[r.id]:
+            b &= ~shapes[o]
+        assert np.array_equal(a, b), r.id
+
+
 # --- configuration and storage ------------------------------------------------
 
 

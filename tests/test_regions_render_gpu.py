@@ -873,3 +873,291 @@ def test_a_clip_document_renders_owners_rule(tmp_path):
     assert L["dense"][core].max() <= 50.0 / np.cos(np.arctan(0.1)) + 1e-6
     assert (L["dense"][core] > 1).sum() > 1000
     assert error.max() < 1e-4 * predicted.max()
+
+
+# --- The masker's partition against owner(), pixel by pixel ---------------
+#
+# The engine paints owner()'s partition by subtraction: a region's slice mask
+# is its shape less every shape that outranks it, and its partial-volume
+# fraction is max(f_self - sum f_sub, 0) (python-multem compute_region_fraction).
+# These build the masker through SimulationEngine.multi_region_masker, as a
+# render does, and compare the engine's test hooks with owner() and with the
+# exact owner() fraction of each pixel's column through the slice.
+
+PN = 96  # test grid (px)
+PDX = 1.0  # A per pixel: fine enough to resolve a band of a few pixels
+
+
+def engine_partition(document, tilt_deg, monkeypatch, origin=(0.37, 0.29)):
+    """The engine's masker for a document, at a tilt about y, on a PN x PN
+    grid; with the document id of each masker slot and the rotation"""
+    import types
+
+    import parakeet.config
+    import parakeet.sample._new
+    from parakeet.simulate._exit_wave import resolve_ice_seed
+    from scipy.spatial.transform import Rotation
+
+    E = parakeet.simulate.engine
+    slots = []
+    real_region, real_sample = E.set_region_shape, E.set_sample_shape
+
+    def region_shape(masker, region, place, clip_planes=None):
+        slots.append(region.id)
+        return real_region(masker, region, place, clip_planes)
+
+    def sample_shape(masker, shape, centre):
+        slots.append("<medium>")
+        return real_sample(masker, shape, centre)
+
+    monkeypatch.setattr(E, "set_region_shape", region_shape)
+    monkeypatch.setattr(E, "set_sample_shape", sample_shape)
+    centre = np.array([PN * PDX / 2, PN * PDX / 2, 40.0])
+    shape = {"type": "cuboid", "cuboid": {"length_x": 4000.0, "length_y": 4000.0, "length_z": 80.0}}
+    config = parakeet.config.load(
+        {
+            "sample": {"box": [PN * PDX, PN * PDX, 80.0], "centre": centre.tolist(), "shape": shape},
+            "simulation": {
+                "ice": True,
+                "seed": 7,
+                "partial_volume_samples": 4,
+                "materials": {"dense": DENSE, "denser": {"density": 3 * WATER_DENSITY}},
+            },
+        }
+    )
+    simulation = resolve_ice_seed(config.simulation.model_dump())
+    regions = parakeet.sample._new.regions_document(
+        parakeet.config.SampleRegions(document=document)
+    )
+    sample = types.SimpleNamespace(regions=regions, centre=centre, shape=shape)
+    scan = types.SimpleNamespace(image_number=[0], is_uniform_angular_scan=False)
+    fake = types.SimpleNamespace(
+        input=types.SimpleNamespace(nx=PN, ny=PN, spec_lx=PN * PDX, spec_ly=PN * PDX, spec_dz=3.0)
+    )
+    rot = Rotation.from_rotvec([0.0, np.radians(tilt_deg), 0.0])
+    masker = E.SimulationEngine.multi_region_masker(
+        fake, 0, PDX, origin, 0.0, rot.as_rotvec(), (0.0, 0.0, 0.0), sample, scan, simulation
+    )
+    assert masker.num_regions() == len(slots)
+    # a sample point p sits at R (p - c) + c - (origin, 0) on the grid
+    t = np.array([-origin[0], -origin[1], 0.0])
+    return masker, slots, rot, centre, t, regions
+
+
+def owner_partition(masker, slots, rot, centre, t, regions, zs, ze):
+    """Per pixel: the engine's label and owner()'s at the slice mid-plane, and
+    the engine's effective fraction per region and owner()'s exact fraction of
+    the pixel's column, both (n_regions, PN * PN)"""
+    import parakeet.sample._regions as R
+
+    _, regs = R.parse(regions)
+    index = {r.id: r.index for r in regs}
+    slot_index = np.array([index.get(s, -1) for s in slots])
+    inv = rot.inv()
+    ii, jj = np.meshgrid(np.arange(PN), np.arange(PN), indexing="ij")  # [x, y]
+
+    def sample_points(z):
+        lab = np.stack([ii * PDX, jj * PDX, np.full(ii.shape, z)], -1).reshape(-1, 3)
+        return inv.apply(lab - t - centre) + centre
+
+    eng = np.array(multem.compute_region_labels_engine(masker, zs, ze, True))
+    eng = np.where(eng >= 0, slot_index[np.clip(eng, 0, None)], eng)
+    mid = sample_points(0.5 * (zs + ze))
+    ref = R.owner(regs, mid)
+    tie = np.zeros(len(ref), bool)
+    for v in np.vstack([np.eye(3), -np.eye(3)]):
+        tie |= R.owner(regs, mid + 1e-3 * PDX * v) != ref
+
+    f_eng = np.zeros((len(regs), PN * PN))
+    if hasattr(multem, "compute_region_fraction_engine"):
+        # the engine's own composition, as the simulation runs it
+        for s in range(len(slots)):
+            if slot_index[s] >= 0:
+                f_eng[slot_index[s]] = multem.compute_region_fraction_engine(masker, s, zs, ze, True)
+    else:
+        # an engine before it: the legacy composition, from each shape's fraction
+        f_shape = [
+            np.array(multem.compute_fraction_engine(masker.region(s).shape, zs, ze, 4, True))
+            for s in range(len(slots))
+        ]
+        for s in range(len(slots)):
+            f = f_shape[s]
+            for u in masker.region(s).subtract_regions:
+                f = np.maximum(f - f_shape[u], 0.0)
+            if slot_index[s] >= 0:
+                f_eng[slot_index[s]] = f
+    p0, d, length = sample_points(zs), inv.apply([0.0, 0.0, 1.0]), ze - zs
+    cuts = [np.zeros((len(p0), 1)), np.full((len(p0), 1), length)]
+    for r in regs:
+        c = R.boundary_crossings(r, p0, d)
+        cuts.append(np.where(np.isfinite(c), np.clip(c, 0.0, length), length))
+    cuts = np.sort(np.concatenate(cuts, axis=1), axis=1)
+    mids, lens = 0.5 * (cuts[:, 1:] + cuts[:, :-1]), cuts[:, 1:] - cuts[:, :-1]
+    own = R.owner(regs, (p0[:, None, :] + mids[..., None] * d).reshape(-1, 3)).reshape(mids.shape)
+    f_ref = np.array([(lens * (own == r.index)).sum(axis=1) / length for r in regs])
+    return eng, ref, tie, f_eng, f_ref, regs
+
+
+def clearance(f_ref):
+    """Pixels that, with their 8 neighbours, lie wholly in one region (or none)
+    through the slice"""
+    pure = np.all((f_ref == 0) | (f_ref == 1), axis=0).reshape(PN, PN)
+    clear = pure.copy()
+    for di in (-1, 0, 1):
+        for dj in (-1, 0, 1):
+            clear &= np.roll(np.roll(pure, di, 0), dj, 1)
+    clear[[0, -1], :] = False
+    clear[:, [0, -1]] = False
+    return clear.ravel()
+
+
+@pytest.mark.parametrize("tilt", [0.0, 40.0])
+def test_overlapping_siblings_and_negative_priorities_partition_as_owner(tilt, monkeypatch):
+    # Two sibling cut ellipsoids in a slab overlap in a band 12 A (12 px)
+    # wide: the one at priority 0 must own the band, the one at -1 the rest.
+    # A sphere at -2 inside the -1 sibling is outranked by its own parent and
+    # owns nothing. A top-level blob at -2 straddles the slab's top face and
+    # owns only what lies outside the slab (the slab, at -1, outranks it)
+    if not engine_features(multem)["convex_regions"]:
+        pytest.skip("this engine has no convex regions")
+    I3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    document = doc(
+        box("slab", -FAR, PN + FAR, y0=-FAR, y1=PN + FAR, z0=10.0, z1=70.0, priority=-1),
+        dict(id="low", kind="ellipsoid", material="dense", parent="slab", priority=-1,
+             centre_A=[30.0, 48.0, 40.0], semi_axes_A=[40.0, 60.0, 25.0], axes=I3,
+             cuts=[{"normal": [1.0, 0.0, 0.0], "offset_A": 24.0}]),     # x <= 54
+        dict(id="high", kind="ellipsoid", material="denser", parent="slab", priority=0,
+             centre_A=[66.0, 48.0, 40.0], semi_axes_A=[40.0, 60.0, 25.0], axes=I3,
+             cuts=[{"normal": [-1.0, 0.0, 0.0], "offset_A": 24.0}]),    # x >= 42
+        dict(id="inside_low", kind="sphere", material="denser", parent="low", priority=-2,
+             centre_A=[25.0, 48.0, 40.0], radius_A=8.0),
+        dict(id="surface", kind="sphere", material="dense", priority=-2,
+             centre_A=[48.0, 30.0, 72.0], radius_A=10.0),
+    )
+    masker, slots, rot, centre, t, regions = engine_partition(document, tilt, monkeypatch)
+    hard = double = clear_tested = 0
+    owned_by = {}
+    for z in (20.0, 31.0, 40.0, 52.0, 66.0, 71.0, 76.0):
+        eng, ref, tie, f_eng, f_ref, regs = owner_partition(
+            masker, slots, rot, centre, t, regions, z - 1.5, z + 1.5
+        )
+        hard += int(((eng != ref) & ~tie).sum())
+        double += int(((eng == -2) & ~tie).sum())
+        clear = clearance(f_ref)
+        clear_tested += int(clear.sum())
+        assert np.array_equal(f_eng[:, clear], f_ref[:, clear]), (
+            "z %.0f: %d clearance pixels differ"
+            % (z, int(np.any(f_eng[:, clear] != f_ref[:, clear], axis=0).sum()))
+        )
+        for r in regs:
+            owned_by[r.id] = owned_by.get(r.id, 0) + int((ref == r.index).sum())
+    assert hard == 0 and double == 0, (hard, double)
+    assert clear_tested > 5000
+    # the band went to the priority-0 sibling, the -2 child got nothing, and
+    # the surface blob kept its part above the slab
+    assert owned_by["inside_low"] == 0
+    assert owned_by["high"] > 0 and owned_by["low"] > 0 and owned_by["surface"] > 0
+
+
+def test_layered_siblings_have_exact_fractions_across_the_band(monkeypatch):
+    # Where a column crosses only the band's faces (one sibling's face lying
+    # inside the other), f_self - f_sub is exact: the fractions over all
+    # regions sum to what owner() gives, pixel by pixel
+    if not engine_features(multem)["convex_regions"]:
+        pytest.skip("this engine has no convex regions")
+    I3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    document = doc(
+        box("slab", -FAR, PN + FAR, y0=-FAR, y1=PN + FAR, z0=-200.0, z1=280.0, priority=-1),
+        dict(id="low", kind="ellipsoid", material="dense", parent="slab", priority=-1,
+             centre_A=[-60.0, 48.0, 40.0], semi_axes_A=[130.0, 400.0, 230.0], axes=I3,
+             cuts=[{"normal": [1.0, 0.0, 0.0], "offset_A": 114.0}]),    # x <= 54
+        dict(id="high", kind="ellipsoid", material="denser", parent="slab", priority=0,
+             centre_A=[156.0, 48.0, 40.0], semi_axes_A=[130.0, 400.0, 230.0], axes=I3,
+             cuts=[{"normal": [-1.0, 0.0, 0.0], "offset_A": 114.0}]),   # x >= 42
+    )
+    masker, slots, rot, centre, t, regions = engine_partition(document, 40.0, monkeypatch)
+    tested = 0
+    for z in (25.0, 40.0, 55.0):
+        eng, ref, tie, f_eng, f_ref, regs = owner_partition(
+            masker, slots, rot, centre, t, regions, z - 1.5, z + 1.5
+        )
+        edge = ~clearance(f_ref)
+        dev = np.abs(f_eng.sum(axis=0) - f_ref.sum(axis=0))[edge]
+        tested += int(edge.sum())
+        assert dev.max() < 1e-6, "z %.0f: sum off by up to %.3g" % (z, dev.max())
+    assert tested > 100
+
+
+def needs_interval_composition():
+    if not engine_features(multem)["convex_regions"] or not engine_features(multem)["interval_composition"]:
+        pytest.skip("this engine has no interval composition of fractions")
+
+
+@pytest.mark.parametrize("tilt", [0.0, 50.0])
+def test_abutting_and_nested_regions_have_exact_fractions(tilt, monkeypatch):
+    # Two cut cells that abut along a plane (band 0), each with an organelle
+    # whose bilayer child is its outer skin, and surface ice outranked by
+    # everything: through every slice the regions' fractions sum to what
+    # owner() gives, pixel by pixel (the legacy composition took material at
+    # the abutting plane and twice at each bilayer)
+    needs_interval_composition()
+    I3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    document = doc(
+        box("slab", -FAR, PN + FAR, y0=-FAR, y1=PN + FAR, z0=10.0, z1=70.0, priority=-1),
+        dict(id="cell_a", kind="ellipsoid", material="dense", parent="slab",
+             centre_A=[20.0, 48.0, 40.0], semi_axes_A=[60.0, 80.0, 28.0], axes=I3,
+             cuts=[{"normal": [1.0, 0.0, 0.0], "offset_A": 28.37}]),     # x <= 48.37
+        dict(id="cell_b", kind="ellipsoid", material="dense", parent="slab",
+             centre_A=[76.0, 48.0, 40.0], semi_axes_A=[60.0, 80.0, 28.0], axes=I3,
+             cuts=[{"normal": [-1.0, 0.0, 0.0], "offset_A": 27.63}]),    # x >= 48.37
+        dict(id="organelle", kind="ellipsoid", material="denser", parent="cell_a",
+             centre_A=[30.0, 40.0, 41.0], semi_axes_A=[12.0, 14.0, 10.0], axes=I3),
+        dict(id="bilayer", kind="ellipsoidal_shell", material="dense", parent="organelle",
+             centre_A=[30.0, 40.0, 41.0], semi_axes_A=[12.0, 14.0, 10.0], axes=I3,
+             inner={"mode": "offset", "thickness_A": 4.0}),
+        dict(id="ice", kind="sphere", material="dense", priority=-2,
+             centre_A=[60.0, 60.0, 74.0], radius_A=9.0),
+    )
+    masker, slots, rot, centre, t, regions = engine_partition(document, tilt, monkeypatch)
+    worst, tested = 0.0, 0
+    for z in np.arange(14.0, 84.0, 3.0):
+        eng, ref, tie, f_eng, f_ref, regs = owner_partition(
+            masker, slots, rot, centre, t, regions, z - 1.5, z + 1.5
+        )
+        edge = ~clearance(f_ref)
+        tested += int(edge.sum())
+        worst = max(worst, float(np.abs(f_eng - f_ref)[:, edge].max()) if edge.any() else 0.0)
+    assert tested > 1000
+    assert worst < 1e-6, worst
+
+
+def test_pruning_the_paint_plan_leaves_the_labels_unchanged(monkeypatch):
+    # The pruned plan subtracts a child only through its parent: the per-pixel
+    # owner on every slice is the same, bit for bit
+    needs_interval_composition()
+    import parakeet.sample._regions as R
+
+    I3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    document = doc(
+        box("slab", -FAR, PN + FAR, y0=-FAR, y1=PN + FAR, z0=10.0, z1=70.0, priority=-1),
+        dict(id="cell", kind="ellipsoid", material="dense", parent="slab",
+             centre_A=[48.0, 48.0, 40.0], semi_axes_A=[45.0, 45.0, 28.0], axes=I3),
+        dict(id="organelle", kind="ellipsoid", material="denser", parent="cell",
+             centre_A=[40.0, 50.0, 41.0], semi_axes_A=[16.0, 14.0, 12.0], axes=I3),
+        dict(id="bilayer", kind="ellipsoidal_shell", material="dense", parent="organelle",
+             centre_A=[40.0, 50.0, 41.0], semi_axes_A=[16.0, 14.0, 12.0], axes=I3,
+             inner={"mode": "offset", "thickness_A": 4.0}),
+        dict(id="ice", kind="sphere", material="dense", priority=-2,
+             centre_A=[48.0, 48.0, 72.0], radius_A=10.0),
+    )
+    labels = {}
+    for prune in (True, False):
+        real = R.paint_plan
+        monkeypatch.setattr(R, "paint_plan", lambda regions, prune=prune, _real=real: _real(regions, prune))
+        masker, *_ = engine_partition(document, 30.0, monkeypatch)
+        labels[prune] = [
+            np.array(multem.compute_region_labels_engine(masker, z - 1.5, z + 1.5, True))
+            for z in np.arange(8.0, 86.0, 3.0)
+        ]
+        monkeypatch.setattr(R, "paint_plan", real)
+    assert all(np.array_equal(a, b) for a, b in zip(labels[True], labels[False]))

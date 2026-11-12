@@ -81,6 +81,17 @@ FEATURES = {
     "keyed_grf": lambda multem: bool(
         getattr(getattr(multem, "MultiRegionMasker", None), "supports_keyed_grf", False)
     ),
+    # The interval composition of partial-volume fractions: a region's part of
+    # each pixel's column less the union of the parts of the regions it
+    # subtracts (MultiRegionMasker.set_region_composition), exact where those
+    # abut it or nest in each other; the legacy composition on request
+    "interval_composition": lambda multem: bool(
+        getattr(
+            getattr(multem, "MultiRegionMasker", None),
+            "supports_region_composition",
+            False,
+        )
+    ),
     "multi_region_potential": lambda multem: (
         hasattr(multem, "ice_slice_statistics")
         and "MultiRegionMasker" in (multem.compute_projected_potential.__doc__ or "")

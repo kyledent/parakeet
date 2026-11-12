@@ -1144,6 +1144,21 @@ class Simulation(BaseModel):
         ),
     )
 
+    region_composition: Literal["interval", "legacy"] = Field(
+        "interval",
+        description=(
+            "For a sample with regions and partial_volume_samples > 0, how a "
+            "region's slice fraction takes off the regions that outrank it. "
+            "'interval': the region's part of each pixel's column through the "
+            "slice less the union of theirs, exact wherever they lie inside it, "
+            "abut it or nest in each other (needs an engine with it; otherwise "
+            "'legacy' is used and the render says so). 'legacy': its fraction "
+            "less each one's whole fraction, which takes material from a region "
+            "where an outranking region only abuts it, or where two nest; as "
+            "renders before the interval composition (reproduces them)"
+        ),
+    )
+
     inelastic_map_workers: int = Field(
         1,
         ge=1,
