@@ -359,53 +359,81 @@ def band_rings(
     return r, w[:m], record
 
 
-def halo(source, pixel_size, r, w):
+def halo(source, pixel_size, r, w, anchor=None, field=None):
     """
     The band's electrons put back: each pixel's removed intensity spread over
     its rings (`band_rings`), summed incoherently. The convolution is linear
-    on a zero-padded canvas, so electrons whose rings leave the field are
+    on a zero-padded canvas, so electrons whose rings leave the canvas are
     lost there (the specimen stops at its edge). It is computed on a coarse
     grid, a quarter of the smallest ring radius, and interpolated back.
+
+    Two ways to lay the coarse grid:
+
+    - anchor and field given (the default in the optics): the coarse lattice
+      starts at the detector field's first pixel, ``anchor`` in the canvas,
+      and the coarse pixel is sized from the detector field, so a wider
+      margin moves nothing in the field. The interpolated halo is not
+      rescaled: its sum against what landed is recorded as
+      ``interpolation_conservation`` instead.
+    - neither (the canvas grid): the lattice starts at the canvas corner and
+      the interpolated halo is rescaled over the whole canvas to what landed,
+      as before; then the field's values depend on the margin.
 
     Args:
         source: The intensity each pixel's band removes, (ny, nx), before the
             ring weights (the share of each pixel's band, summed to 1)
         pixel_size: The grid spacing (A)
         r, w: The ring radii (A) and their weights, normalised here
+        anchor: (y0, x0), the detector field's first pixel in the canvas
+        field: (ny, nx), the detector field's size in pixels
 
     Returns:
         (halo, record): the (ny, nx) intensity that lands, and the coarse
-        pixel and the share of the source that leaves the field
+        pixel and the share of the source that leaves the canvas (and, on
+        the field grid, the detector field, and how far from the field's
+        edge a source pixel can still reach into it)
 
     """
     from scipy.ndimage import map_coordinates
 
+    on_field = anchor is not None and field is not None
     ny, nx = source.shape
     total = float(source.sum())
     if len(r) == 0 or total == 0:
-        return np.zeros_like(source), {"coarse_binning": None, "left_field": 0.0}
+        out = {"coarse_binning": None, "left_field": 0.0}
+        if on_field:
+            out.update(left_canvas=0.0, left_detector_field=0.0, grid="field")
+        return np.zeros_like(source), out
     r = np.asarray(r, dtype="float64")
     w = np.asarray(w, dtype="float64") / np.sum(w)
 
-    # A ring wider than the field's diagonal lands outside it from anywhere
+    # A ring wider than the canvas's diagonal lands outside it from anywhere
     diagonal = np.hypot(ny, nx) * pixel_size
     beyond = float(w[r > diagonal].sum())
     keep = r <= diagonal
     r, w = r[keep], w[keep]
     if len(r) == 0:
-        return np.zeros_like(source), {"coarse_binning": None, "left_field": 1.0}
+        out = {"coarse_binning": None, "left_field": 1.0}
+        if on_field:
+            out.update(left_canvas=1.0, left_detector_field=1.0, grid="field")
+        return np.zeros_like(source), out
 
     # The coarse pixel: a quarter of the ring radius below which a tenth of
     # the weight lies (smaller rings fall in their own coarse pixel), and no
-    # finer than keeps the padded canvas within MAX_HALO_CANVAS
+    # finer than keeps the padded canvas within MAX_HALO_CANVAS (sized from
+    # the detector field on the field grid, so the margin cannot change it)
     order = np.argsort(r)
     r10 = r[order][np.searchsorted(np.cumsum(w[order]), 0.1 * w.sum())]
-    a = max(pixel_size, 0.25 * r10, (max(ny, nx) * pixel_size + 2 * r.max()) / MAX_HALO_CANVAS)
+    extent = max(field) if on_field else max(ny, nx)
+    a = max(pixel_size, 0.25 * r10, (extent * pixel_size + 2 * r.max()) / MAX_HALO_CANVAS)
     b = max(1, int(np.floor(a / pixel_size)))
     a = b * pixel_size  # the coarse pixel (A)
-    cy, cx = -(-ny // b), -(-nx // b)
+    # On the field grid, zeros before the canvas put a coarse boundary on the
+    # field's first pixel; each coarse pixel holds the sum of its pixels
+    oy, ox = ((-int(anchor[0])) % b, (-int(anchor[1])) % b) if on_field else (0, 0)
+    cy, cx = -(-(ny + oy) // b), -(-(nx + ox) // b)
     s = np.zeros((cy * b, cx * b))
-    s[:ny, :nx] = source
+    s[oy : oy + ny, ox : ox + nx] = source
     coarse = s.reshape(cy, b, cx, b).sum(axis=(1, 3))
 
     # The kernel: each ring's weight spread over its circumference
@@ -429,21 +457,46 @@ def halo(source, pixel_size, r, w):
     canvas = np.zeros((fy, fx))
     canvas[pad : pad + cy, pad : pad + cx] = coarse
     out = np.fft.irfft2(np.fft.rfft2(canvas) * np.fft.rfft2(kernel), s=(fy, fx))
-    field = out[pad : pad + cy, pad : pad + cx]
-    landed = float(field.sum())
+    field_c = out[pad : pad + cy, pad : pad + cx]
+    landed = float(field_c.sum())
 
     # Back onto the fine grid: the coarse density at each fine pixel's centre
-    dens = field / b**2
-    jy = (np.arange(ny) + 0.5) / b - 0.5
-    jx = (np.arange(nx) + 0.5) / b - 0.5
+    dens = field_c / b**2
+    jy = (np.arange(ny) + oy + 0.5) / b - 0.5
+    jx = (np.arange(nx) + ox + 0.5) / b - 0.5
     gy, gx = np.meshgrid(jy, jx, indexing="ij")
     fine = map_coordinates(dens, [gy, gx], order=1, mode="nearest")
     landed *= 1 - beyond
-    if fine.sum() > 0:
-        fine *= landed / fine.sum()
+    if not on_field:
+        if fine.sum() > 0:
+            fine *= landed / fine.sum()
+        return fine, {
+            "coarse_binning": b,
+            "coarse_pixel_A": a,
+            "beyond_diagonal": beyond,
+            "left_field": 1 - landed / total,
+        }
+    fine *= 1 - beyond
+    # How far beyond the field's edge a source pixel can still feed it: the
+    # bilinear stencil of a field pixel reaches a coarse centre half a coarse
+    # pixel outside the field, the kernel reaches its farthest non-zero
+    # centre distance from there, and the source coarse pixel holds pixels
+    # up to half a coarse pixel beyond its centre
+    support = float(rho[kernel > 0].max()) if (kernel > 0).any() else 0.0
+    reach = support + a
+    y0, x0 = int(anchor[0]), int(anchor[1])
+    in_field = float(fine[y0 : y0 + field[0], x0 : x0 + field[1]].sum())
     return fine, {
+        "grid": "field",
         "coarse_binning": b,
         "coarse_pixel_A": a,
+        "coarse_offset_px": [oy, ox],
         "beyond_diagonal": beyond,
-        "left_field": 1 - landed / total,
+        "left_canvas": 1 - landed / total,
+        "left_field": 1 - landed / total,  # the old name for left_canvas
+        "left_detector_field": 1 - in_field / total,
+        "interpolation_conservation": float(fine.sum() / landed) if landed > 0 else None,
+        "kernel_support_A": support,
+        "reach_A": reach,
+        "reach_px": reach / pixel_size,
     }

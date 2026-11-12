@@ -269,6 +269,7 @@ class OpticsImageSimulator(object):
         record = {
             "model": settings["model"],
             "halo": settings["halo"],
+            "halo_grid": settings.get("halo_grid", "field"),
             "regime": "band-limited potential (MULTEM_BANDLIMITED_POTENTIAL=1)",
             "energy_keV": energy,
             "wavelength_A": lam,
@@ -327,7 +328,15 @@ class OpticsImageSimulator(object):
         share = np.divide(removed, tau, out=np.zeros_like(tau), where=tau > 0)
         share = share * electron_fraction
         total = np.zeros_like(tau)
-        record = {"defocus_A": float(defocus), "materials": {}}
+        # The coarse grid anchored to the detector field (the default), or to
+        # the canvas corner as renders before it
+        on_field = self.simulation["elastic_out"].get("halo_grid", "field") == "field"
+        margin = int(self.simulation["margin"])
+        record = {
+            "defocus_A": float(defocus),
+            "grid": "field" if on_field else "canvas",
+            "materials": {},
+        }
         for material, (band, n) in self._elastic_bands.items():
             r, w, rings = parakeet.elastic.band_rings(
                 n,
@@ -338,7 +347,17 @@ class OpticsImageSimulator(object):
                 c_30_A,
                 self.simulation["elastic_out"]["model"],
             )
-            h, info = parakeet.elastic.halo(share * band, detector.pixel_size, r, w)
+            if on_field:
+                h, info = parakeet.elastic.halo(
+                    share * band,
+                    detector.pixel_size,
+                    r,
+                    w,
+                    anchor=(margin, margin),
+                    field=(detector.ny, detector.nx),
+                )
+            else:
+                h, info = parakeet.elastic.halo(share * band, detector.pixel_size, r, w)
             total += h * (1 - rings["tail_share"])
             record["materials"][material] = dict(rings, **info)
         # One defocus per image: across a tilted field the defocus changes by
@@ -351,6 +370,20 @@ class OpticsImageSimulator(object):
             half * abs(np.tan(np.radians(angle))) / abs(defocus) if defocus else None
         )
         record["mean_halo"] = float(total.mean())
+        if on_field:
+            reach = [m.get("reach_px") for m in record["materials"].values()]
+            reach = [x for x in reach if x is not None]
+            record["reach_px"] = max(reach) if reach else None
+            record["margin_covers_reach"] = (
+                margin >= record["reach_px"] if reach else True
+            )
+            if reach and margin < record["reach_px"]:
+                logger.warning(
+                    "elastic_out halo: the margin (%d px) is less than the halo's "
+                    "reach (%.1f px): field pixels within %.1f px of its edge miss "
+                    "halo from specimen beyond the canvas"
+                    % (margin, record["reach_px"], record["reach_px"] - margin)
+                )
         return total, record
 
     def __call__(self, index):

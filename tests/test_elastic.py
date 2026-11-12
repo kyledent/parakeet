@@ -165,6 +165,70 @@ def test_rings_wider_than_the_field_leave_it():
     assert not h.any() and info["left_field"] == 1.0
 
 
+def _two_canvases(margins, field=(96, 128), seed=7):
+    """One smooth random source, cut into canvases that differ only in margin"""
+    rng = np.random.default_rng(seed)
+    big = max(margins)
+    full = rng.random((field[0] + 2 * big, field[1] + 2 * big)) + 0.5
+    return [full[big - m : big - m + field[0] + 2 * m, big - m : big - m + field[1] + 2 * m] for m in margins]
+
+
+def test_on_the_field_grid_the_margin_changes_nothing_in_the_field():
+    # Rings of 30-75 A (a coarse pixel of 5 px) and margins of 4, 1 and 0 px mod
+    # the coarse pixel, both beyond the halo's reach: the field's halo agrees to
+    # round-off, where the canvas grid moves with the margin
+    r, w = np.array([30.0, 45.0, 75.0]), np.array([0.2, 0.5, 0.3])
+    field = (96, 128)
+    margins = (84, 91, 150)
+    got, canvas = [], []
+    for m, src in zip(margins, _two_canvases(margins, field)):
+        h, info = E.halo(src, DX, r, w, anchor=(m, m), field=field)
+        assert info["grid"] == "field" and info["reach_px"] < min(margins)
+        assert info["coarse_offset_px"] == [(-m) % info["coarse_binning"]] * 2
+        got.append(h[m : m + field[0], m : m + field[1]])
+        hc, _ = E.halo(src, DX, r, w)
+        canvas.append(hc[m : m + field[0], m : m + field[1]])
+    for g in got[1:]:
+        np.testing.assert_allclose(g, got[0], rtol=1e-12, atol=0)
+    assert np.abs(canvas[1] - canvas[0]).max() > 1e-6 * canvas[0].max()
+
+
+def test_the_field_grid_records_its_reach_and_conserves_without_a_rescale():
+    r, w = np.array([30.0, 45.0, 75.0]), np.array([0.2, 0.5, 0.3])
+    field = (96, 128)
+    m = 90
+    (src,) = _two_canvases((m,), field)
+    h, info = E.halo(src, DX, r, w, anchor=(m, m), field=field)
+    a = info["coarse_pixel_A"]
+    # the kernel reaches its outermost ring's bin, the stencil and the source
+    # pixel a coarse pixel more
+    assert 75.0 <= info["kernel_support_A"] <= 75.0 + 2 * a
+    assert info["reach_A"] == pytest.approx(info["kernel_support_A"] + a)
+    assert info["reach_px"] == pytest.approx(info["reach_A"] / DX)
+    # nothing rescales it: its sum is the interpolation's, near what landed
+    assert info["interpolation_conservation"] == pytest.approx(1.0, abs=1e-3)
+    assert info["left_canvas"] == info["left_field"]
+    assert info["left_canvas"] < info["left_detector_field"] < 1
+
+
+def test_the_canvas_grid_is_the_default_of_the_function_and_unchanged():
+    # Without anchor and field the function lays its grid at the canvas corner
+    # and rescales to what landed, as before
+    r, w = np.array([30.0, 45.0, 75.0]), np.array([0.2, 0.5, 0.3])
+    (src,) = _two_canvases((90,))
+    h, info = E.halo(src, DX, r, w)
+    assert "grid" not in info and "reach_px" not in info
+    assert h.sum() == pytest.approx(src.sum() * (1 - info["left_field"]), rel=1e-9)
+
+
+def test_the_halo_grid_setting():
+    assert parakeet.config.Simulation().elastic_out.halo_grid == "field"
+    s = parakeet.config.Simulation(elastic_out={"halo": True, "halo_grid": "canvas"})
+    assert s.elastic_out.halo_grid == "canvas"
+    with pytest.raises(Exception):
+        parakeet.config.Simulation(elastic_out={"halo_grid": "corner"})
+
+
 # -- the optics' use of it, with no engine ------------------------------------
 
 NX = 64

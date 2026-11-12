@@ -1069,6 +1069,19 @@ class ElasticOut(BaseModel):
         ),
     )
 
+    halo_grid: Literal["field", "canvas"] = Field(
+        "field",
+        description=(
+            "The halo's coarse grid. 'field': its lattice starts at the detector "
+            "field's first pixel and its pixel is sized from the field, and the "
+            "interpolated halo is not rescaled, so the margin changes nothing in "
+            "the field once it covers the halo's reach (recorded as reach_px). "
+            "'canvas': the lattice starts at the canvas corner and the halo is "
+            "rescaled over the whole canvas, as renders before it (reproduces "
+            "them)"
+        ),
+    )
+
 
 class Simulation(BaseModel):
     """
