@@ -1095,6 +1095,17 @@ class Simulation(BaseModel):
 
     padding: int = Field(100, description="Additional padding")
 
+    precision: Literal["float", "double"] = Field(
+        "float",
+        description=(
+            "The multislice engine's floating-point precision. 'float' (the "
+            "default, as before) accumulates round-off over many slices: for "
+            "thousands of slices the exit wave's norm can drift by ~1e-3 "
+            "depending on the grid. 'double' removes that drift at about "
+            "1.3-2.2x the exit wave's run time"
+        ),
+    )
+
     division_thickness: int = Field(100, description="Deprecated")
 
     ice: bool = Field(

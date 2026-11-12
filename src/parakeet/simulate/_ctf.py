@@ -71,6 +71,7 @@ class CTFSimulator(object):
             self.simulation["slice_thickness"],
             self.simulation["margin"],
             "HRTEM",
+            precision=self.simulation.get("precision", "float"),
         )
         simulate.input.nx = nx
         simulate.input.ny = ny

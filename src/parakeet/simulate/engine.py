@@ -402,6 +402,7 @@ class SimulationEngine(object):
         margin,
         simulation_type,
         centre=None,
+        precision="float",
     ):
         """
         Initialise the simulation engine
@@ -412,7 +413,7 @@ class SimulationEngine(object):
         self.margin = margin
 
         # Setup the system configuration
-        self.system_conf = self._create_system_configuration(device, gpu_id)
+        self.system_conf = self._create_system_configuration(device, gpu_id, precision)
 
         # Setup the input multislice
         if simulation_type in ["CBED"]:
@@ -424,25 +425,27 @@ class SimulationEngine(object):
                 microscope, slice_thickness, margin, simulation_type, centre
             )
 
-    def _create_system_configuration(self, device, gpu_id):
+    def _create_system_configuration(self, device, gpu_id, precision="float"):
         """
         Create an appropriate system configuration
 
         Args:
             device (str): The device to use
             gpu_id (int): The gpu id
+            precision (str): The engine's precision, "float" or "double"
 
         Returns:
             object: The system configuration
 
         """
         assert device in ["cpu", "gpu"]
+        assert precision in ["float", "double"]
 
         # Initialise the system configuration
         system_conf = multem.SystemConfiguration()
 
         # Set the precision
-        system_conf.precision = "float"
+        system_conf.precision = precision
 
         # Set the device
         if device == "gpu":

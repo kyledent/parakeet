@@ -114,6 +114,7 @@ class ProjectedPotentialSimulator(object):
             self.simulation["margin"],
             "EWRS",
             z_centre,
+            precision=self.simulation.get("precision", "float"),
         )
 
         # Set the specimen size

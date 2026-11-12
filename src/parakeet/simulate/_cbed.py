@@ -118,6 +118,7 @@ class CBEDImageSimulator(object):
             self.simulation["margin"] + self.simulation["padding"],
             "CBED",
             z_centre,
+            precision=self.simulation.get("precision", "float"),
         )
 
         # Set the specimen size

@@ -179,6 +179,31 @@ def test_the_ice_path_and_a_water_medium_with_no_regions_agree(tmp_path):
     assert np.angle(new[whole].mean() / old[whole].mean()) == pytest.approx(0, abs=0.02)
 
 
+def test_the_engine_runs_in_double_precision_and_says_so(tmp_path):
+    # A water slab in double precision: the engine's configuration takes the
+    # setting, the exit wave stays unitary (no float round-off over the
+    # slices), it agrees with the float render to float's round-off, and the
+    # exit-wave file records which precision made it
+    import h5py
+
+    conf = parakeet.simulate.engine.SimulationEngine._create_system_configuration
+    assert conf(None, "cpu", None, "double").precision == "double"
+    assert conf(None, "cpu", None).precision == "float"
+    regions = doc(box("water", -FAR, FIELD + FAR))
+    psi = {}
+    for precision in ("float", "double"):
+        psi[precision], path = render(
+            tmp_path / precision, regions, simulation={"precision": precision}
+        )
+        with h5py.File(str(tmp_path / precision / "exit_wave.h5"), "r") as f:
+            assert f["entry"].attrs["simulation_precision"] == precision
+    norm = float((np.abs(psi["double"]) ** 2).mean())
+    rel = float(np.abs(psi["float"] - psi["double"]).max() / np.abs(psi["double"]).mean())
+    print("double: mean |psi|^2 = %.9f; float against double: max %.3g" % (norm, rel))
+    assert norm == pytest.approx(1.0, abs=1e-6)
+    assert 0 < rel < 1e-3
+
+
 def test_three_materials_side_by_side(tmp_path):
     # Water for x < 128 A, a twice-as-dense material for 128 <= x < 256, and
     # vacuum (the medium) beyond

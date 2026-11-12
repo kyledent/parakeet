@@ -76,3 +76,10 @@ def test_load(tmp_path):
 
 def test_show():
     parakeet.config.show(parakeet.config.Config())
+
+
+def test_the_engine_precision_setting():
+    assert parakeet.config.Simulation().precision == "float"
+    assert parakeet.config.Simulation(precision="double").precision == "double"
+    with pytest.raises(Exception):
+        parakeet.config.Simulation(precision="half")

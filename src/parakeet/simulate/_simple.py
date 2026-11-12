@@ -93,6 +93,7 @@ class SimpleImageSimulator(object):
             self.simulation["slice_thickness"],
             self.simulation["margin"],
             "EWRS",
+            precision=self.simulation.get("precision", "float"),
         )
 
         # Set the specimen size

@@ -139,6 +139,7 @@ class ExitWaveImageSimulator(object):
             self.simulation["margin"] + self.simulation["padding"],
             "EWRS",
             z_centre,
+            precision=self.simulation.get("precision", "float"),
         )
 
         # Set the specimen size
@@ -542,6 +543,14 @@ def _exit_wave_Config(
         pixel_size=simulation.pixel_size,
         dtype=np.complex64,
     )
+
+    # The engine's precision, for the record (the per-image header is a fixed
+    # schema, so it goes on the file)
+    precision = config.simulation.precision
+    logger.info("Multislice precision: %s" % precision)
+    handle = getattr(writer, "handle", None)
+    if handle is not None and "entry" in handle:
+        handle["entry"].attrs["simulation_precision"] = precision
 
     # Set the particle positions
     writer.particle_positions = get_particle_positions(
